@@ -49,9 +49,12 @@ class ClassifierGui(BaseWindow):
 
         self.input_dir = tk.StringVar(value=str(Path("input_files").resolve()))
         self.final_category = tk.StringVar()
+        self.search_query = tk.StringVar()
         self.status_text = tk.StringVar(value="준비됨")
         self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.all_payloads: list[dict[str, object]] = []
         self.item_payloads: dict[str, dict[str, object]] = {}
+        self.search_query.trace_add("write", lambda *_args: self.apply_filename_filter())
 
         self._build_ui()
         self.refresh_stats()
@@ -84,6 +87,12 @@ class ClassifierGui(BaseWindow):
         right_frame = ttk.Frame(main_pane, padding=(10, 0, 0, 0))
         main_pane.add(left_frame, weight=3)
         main_pane.add(right_frame, weight=2)
+
+        search_frame = ttk.Frame(left_frame)
+        search_frame.pack(fill="x", pady=(0, 8))
+        ttk.Label(search_frame, text="파일명 검색").pack(side="left")
+        ttk.Entry(search_frame, textvariable=self.search_query).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        ttk.Button(search_frame, text="초기화", command=self.clear_filename_filter).pack(side="left", padx=(8, 0))
 
         columns = ("file", "category", "final_score", "rule_score", "embedding_score", "feedback_score")
         self.tree = ttk.Treeview(left_frame, columns=columns, show="headings", height=18)
@@ -243,7 +252,52 @@ class ClassifierGui(BaseWindow):
         self.after(100, self._drain_queue)
 
     def _insert_result(self, payload: dict[str, object]) -> None:
-        """Insert one classification result into the table."""
+        """Store one classification result and refresh the filtered table."""
+        self.all_payloads.append(payload)
+        self._refresh_result_table()
+
+    def apply_filename_filter(self) -> None:
+        """Filter visible rows by file name."""
+        self._refresh_result_table()
+
+    def clear_filename_filter(self) -> None:
+        """Clear the file name search box."""
+        self.search_query.set("")
+
+    def _refresh_result_table(self) -> None:
+        """Redraw the table using the current file name filter."""
+        selected_file = self._selected_file_name()
+        for item_id in self.tree.get_children():
+            self.tree.delete(item_id)
+        self.item_payloads.clear()
+
+        query = self.search_query.get().strip().lower()
+        for payload in self.all_payloads:
+            file_name = str(payload["file_name"])
+            if query and query not in file_name.lower():
+                continue
+            item_id = self._insert_payload_row(payload)
+            if selected_file and file_name == selected_file:
+                self.tree.selection_set(item_id)
+                self.tree.focus(item_id)
+
+        visible_count = len(self.tree.get_children())
+        total_count = len(self.all_payloads)
+        if query:
+            self.status_text.set(f"검색 결과: {visible_count}/{total_count}개")
+
+    def _selected_file_name(self) -> str | None:
+        """Return the selected row file name before table redraw."""
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        payload = self.item_payloads.get(selection[0])
+        if not payload:
+            return None
+        return str(payload["file_name"])
+
+    def _insert_payload_row(self, payload: dict[str, object]) -> str:
+        """Insert one payload into the current table view."""
         result = payload["result"]
         assert isinstance(result, ClassificationResult)
         item_id = self.tree.insert(
@@ -259,6 +313,7 @@ class ClassifierGui(BaseWindow):
             ),
         )
         self.item_payloads[item_id] = payload
+        return item_id
 
     def on_select_result(self, _event: object | None = None) -> None:
         """Show details for the selected result."""
@@ -335,6 +390,7 @@ class ClassifierGui(BaseWindow):
         """Clear table and details."""
         for item_id in self.tree.get_children():
             self.tree.delete(item_id)
+        self.all_payloads.clear()
         self.item_payloads.clear()
         self._set_detail("")
 
