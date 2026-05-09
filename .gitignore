@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local data and generated files
+data/*.db
+data/*.db-*
+tests_runtime/
+tmp*/
+
+# User documents and private inputs
+input_files/*
+!input_files/.gitkeep
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
