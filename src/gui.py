@@ -110,8 +110,11 @@ class ClassifierGui(BaseWindow):
         self.category_combo.pack(side="left", padx=(8, 0))
         ttk.Button(search_frame, text="초기화", command=self.clear_filename_filter).pack(side="left", padx=(8, 0))
 
+        table_frame = ttk.Frame(left_frame)
+        table_frame.pack(fill="both", expand=True)
+
         columns = ("file", "category", "final_score", "rule_score", "embedding_score", "feedback_score")
-        self.tree = ttk.Treeview(left_frame, columns=columns, show="headings", height=18)
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=18)
         self.tree.heading("file", text="파일")
         self.tree.heading("category", text="추천")
         self.tree.heading("final_score", text="최종")
@@ -127,7 +130,7 @@ class ClassifierGui(BaseWindow):
         self.tree.bind("<<TreeviewSelect>>", self.on_select_result)
         self.tree.pack(side="left", fill="both", expand=True)
 
-        scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=self.tree.yview)
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
 
