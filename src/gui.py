@@ -50,11 +50,14 @@ class ClassifierGui(BaseWindow):
         self.input_dir = tk.StringVar(value=str(Path("input_files").resolve()))
         self.final_category = tk.StringVar()
         self.search_query = tk.StringVar()
+        self.category_filter = tk.StringVar(value="전체")
         self.status_text = tk.StringVar(value="준비됨")
         self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.all_payloads: list[dict[str, object]] = []
         self.item_payloads: dict[str, dict[str, object]] = {}
+        self.category_combo: ttk.Combobox | None = None
         self.search_query.trace_add("write", lambda *_args: self.apply_filename_filter())
+        self.category_filter.trace_add("write", lambda *_args: self.apply_category_filter())
 
         self._build_ui()
         self.refresh_stats()
@@ -92,6 +95,15 @@ class ClassifierGui(BaseWindow):
         search_frame.pack(fill="x", pady=(0, 8))
         ttk.Label(search_frame, text="파일명 검색").pack(side="left")
         ttk.Entry(search_frame, textvariable=self.search_query).pack(side="left", fill="x", expand=True, padx=(8, 0))
+        ttk.Label(search_frame, text="카테고리").pack(side="left", padx=(8, 0))
+        self.category_combo = ttk.Combobox(
+            search_frame,
+            textvariable=self.category_filter,
+            values=["전체"],
+            state="readonly",
+            width=14,
+        )
+        self.category_combo.pack(side="left", padx=(8, 0))
         ttk.Button(search_frame, text="초기화", command=self.clear_filename_filter).pack(side="left", padx=(8, 0))
 
         columns = ("file", "category", "final_score", "rule_score", "embedding_score", "feedback_score")
@@ -254,15 +266,21 @@ class ClassifierGui(BaseWindow):
     def _insert_result(self, payload: dict[str, object]) -> None:
         """Store one classification result and refresh the filtered table."""
         self.all_payloads.append(payload)
+        self._refresh_category_options()
         self._refresh_result_table()
 
     def apply_filename_filter(self) -> None:
         """Filter visible rows by file name."""
         self._refresh_result_table()
 
+    def apply_category_filter(self) -> None:
+        """Filter visible rows by predicted category."""
+        self._refresh_result_table()
+
     def clear_filename_filter(self) -> None:
-        """Clear the file name search box."""
+        """Clear the file name and category filters."""
         self.search_query.set("")
+        self.category_filter.set("전체")
 
     def _refresh_result_table(self) -> None:
         """Redraw the table using the current file name filter."""
@@ -272,9 +290,14 @@ class ClassifierGui(BaseWindow):
         self.item_payloads.clear()
 
         query = self.search_query.get().strip().lower()
+        category_filter = self.category_filter.get().strip()
         for payload in self.all_payloads:
             file_name = str(payload["file_name"])
+            result = payload["result"]
+            assert isinstance(result, ClassificationResult)
             if query and query not in file_name.lower():
+                continue
+            if category_filter and category_filter != "전체" and result.predicted_category != category_filter:
                 continue
             item_id = self._insert_payload_row(payload)
             if selected_file and file_name == selected_file:
@@ -283,8 +306,8 @@ class ClassifierGui(BaseWindow):
 
         visible_count = len(self.tree.get_children())
         total_count = len(self.all_payloads)
-        if query:
-            self.status_text.set(f"검색 결과: {visible_count}/{total_count}개")
+        if query or category_filter != "전체":
+            self.status_text.set(f"필터 결과: {visible_count}/{total_count}개")
 
     def _selected_file_name(self) -> str | None:
         """Return the selected row file name before table redraw."""
@@ -314,6 +337,23 @@ class ClassifierGui(BaseWindow):
         )
         self.item_payloads[item_id] = payload
         return item_id
+
+    def _refresh_category_options(self) -> None:
+        """Update category filter options from current results."""
+        if self.category_combo is None:
+            return
+
+        categories = sorted(
+            {
+                payload["result"].predicted_category
+                for payload in self.all_payloads
+                if isinstance(payload["result"], ClassificationResult)
+            }
+        )
+        values = ["전체", *categories]
+        self.category_combo.configure(values=values)
+        if self.category_filter.get() not in values:
+            self.category_filter.set("전체")
 
     def on_select_result(self, _event: object | None = None) -> None:
         """Show details for the selected result."""
@@ -392,6 +432,7 @@ class ClassifierGui(BaseWindow):
             self.tree.delete(item_id)
         self.all_payloads.clear()
         self.item_payloads.clear()
+        self._refresh_category_options()
         self._set_detail("")
 
     def _set_detail(self, text: str) -> None:
