@@ -52,10 +52,14 @@ class ClassifierGui(BaseWindow):
         self.search_query = tk.StringVar()
         self.category_filter = tk.StringVar(value="전체")
         self.status_text = tk.StringVar(value="준비됨")
+        self.progress_text = tk.StringVar(value="진행도: 0/0")
+        self.progress_value = tk.DoubleVar(value=0.0)
         self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.all_payloads: list[dict[str, object]] = []
         self.item_payloads: dict[str, dict[str, object]] = {}
         self.category_combo: ttk.Combobox | None = None
+        self.total_files = 0
+        self.processed_files = 0
         self.search_query.trace_add("write", lambda *_args: self.apply_filename_filter())
         self.category_filter.trace_add("write", lambda *_args: self.apply_category_filter())
 
@@ -127,6 +131,17 @@ class ClassifierGui(BaseWindow):
         self.tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
 
+        progress_frame = ttk.Frame(left_frame)
+        progress_frame.pack(fill="x", pady=(8, 0))
+        self.progress_bar = ttk.Progressbar(
+            progress_frame,
+            variable=self.progress_value,
+            maximum=100,
+            mode="determinate",
+        )
+        self.progress_bar.pack(side="left", fill="x", expand=True)
+        ttk.Label(progress_frame, textvariable=self.progress_text, width=16, anchor="e").pack(side="left", padx=(8, 0))
+
         ttk.Label(right_frame, text="추천 근거").pack(anchor="w")
         self.detail_text = tk.Text(right_frame, height=16, wrap="word")
         self.detail_text.pack(fill="both", expand=True, pady=(4, 10))
@@ -185,6 +200,7 @@ class ClassifierGui(BaseWindow):
             return
 
         self.status_text.set(f"분류 중: {len(files)}개")
+        self._reset_progress(len(files))
         worker = threading.Thread(target=self._classify_worker, args=(files,), daemon=True)
         worker.start()
         self.after(100, self._drain_queue)
@@ -254,10 +270,13 @@ class ClassifierGui(BaseWindow):
             event, payload = self.result_queue.get()
             if event == "result":
                 self._insert_result(payload)  # type: ignore[arg-type]
+                self._advance_progress()
             elif event == "error":
                 self._append_detail(f"[읽기 실패] {payload}\n")
+                self._advance_progress()
             elif event == "done":
                 self.status_text.set("분류 완료")
+                self._set_progress(self.total_files, self.total_files)
                 self.refresh_stats()
                 return
 
@@ -337,6 +356,23 @@ class ClassifierGui(BaseWindow):
         )
         self.item_payloads[item_id] = payload
         return item_id
+
+    def _reset_progress(self, total_files: int) -> None:
+        """Reset the progress bar for a new classification run."""
+        self.total_files = total_files
+        self.processed_files = 0
+        self._set_progress(0, total_files)
+
+    def _advance_progress(self) -> None:
+        """Advance the progress bar by one processed file."""
+        self.processed_files = min(self.processed_files + 1, self.total_files)
+        self._set_progress(self.processed_files, self.total_files)
+
+    def _set_progress(self, processed_files: int, total_files: int) -> None:
+        """Update progress text and bar value."""
+        percent = (processed_files / total_files * 100) if total_files else 0.0
+        self.progress_value.set(percent)
+        self.progress_text.set(f"진행도: {processed_files}/{total_files}")
 
     def _refresh_category_options(self) -> None:
         """Update category filter options from current results."""
@@ -432,6 +468,7 @@ class ClassifierGui(BaseWindow):
             self.tree.delete(item_id)
         self.all_payloads.clear()
         self.item_payloads.clear()
+        self._set_progress(0, 0)
         self._refresh_category_options()
         self._set_detail("")
 
