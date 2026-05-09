@@ -192,6 +192,7 @@ class ClassifierGui(BaseWindow):
     def start_classify(self) -> None:
         """Run classification in a background thread."""
         self._clear_results()
+        self.status_text.set("파일 목록 준비 중")
         input_dir = ensure_input_directory(self.input_dir.get())
         files = discover_supported_files(input_dir)
         self.start_classify_files(files)
@@ -202,7 +203,7 @@ class ClassifierGui(BaseWindow):
             messagebox.showinfo("안내", "분류할 txt/pdf 파일이 없습니다.")
             return
 
-        self.status_text.set(f"분류 중: {len(files)}개")
+        self.status_text.set("분류 엔진 준비 중")
         self._reset_progress(len(files))
         worker = threading.Thread(target=self._classify_worker, args=(files,), daemon=True)
         worker.start()
@@ -225,14 +226,17 @@ class ClassifierGui(BaseWindow):
 
     def _classify_worker(self, files: list[Path]) -> None:
         """Classify files and send results to the UI queue."""
+        self.result_queue.put(("status", "분류 엔진 준비 중"))
         classifier = HybridClassifier(
             repository=self.repository,
             embedder=SentenceTransformerEmbedder(),
             rule_classifier=RuleBasedClassifier(self.repository),
         )
+        self.result_queue.put(("status", f"분류 시작: {len(files)}개"))
 
-        for file_path in files:
+        for index, file_path in enumerate(files, start=1):
             try:
+                self.result_queue.put(("start_file", {"index": index, "file_name": file_path.name}))
                 payload = self._classify_one(classifier, file_path)
                 self.result_queue.put(("result", payload))
             except Exception as error:
@@ -271,7 +275,11 @@ class ClassifierGui(BaseWindow):
         """Move worker results into the Tkinter UI."""
         while not self.result_queue.empty():
             event, payload = self.result_queue.get()
-            if event == "result":
+            if event == "status":
+                self.status_text.set(str(payload))
+            elif event == "start_file":
+                self._show_current_file(payload)  # type: ignore[arg-type]
+            elif event == "result":
                 self._insert_result(payload)  # type: ignore[arg-type]
                 self._advance_progress()
             elif event == "error":
@@ -376,6 +384,13 @@ class ClassifierGui(BaseWindow):
         percent = (processed_files / total_files * 100) if total_files else 0.0
         self.progress_value.set(percent)
         self.progress_text.set(f"진행도: {processed_files}/{total_files}")
+
+    def _show_current_file(self, payload: dict[str, object]) -> None:
+        """Show which file is currently being processed."""
+        index = int(payload["index"])
+        file_name = str(payload["file_name"])
+        self.status_text.set(f"처리 중 ({index}/{self.total_files}): {file_name}")
+        self.progress_text.set(f"진행도: {self.processed_files}/{self.total_files}")
 
     def _refresh_category_options(self) -> None:
         """Update category filter options from current results."""
