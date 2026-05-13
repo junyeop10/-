@@ -15,10 +15,15 @@ data/*.db
 data/*.db-*
 tests_runtime/
 tmp*/
+scratch/
 
 # User documents and private inputs
 input_files/*
 !input_files/.gitkeep
+
+# Local backup/source snapshots
+src_backup_before_agent/
+*_original.py
 
 # Build artifacts
 build/

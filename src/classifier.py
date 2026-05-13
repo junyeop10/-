@@ -40,7 +40,6 @@ class HybridClassifier:
         repository: ClassificationRepository,
         embedder: SentenceTransformerEmbedder,
         rule_classifier: RuleBasedClassifier,
-        use_llm: bool = False,
         rule_skip_embedding_threshold: float = 0.85,
         min_rule_matches_for_skip: int = 3,
         use_embedding_for_no_rule: bool = True,
@@ -51,7 +50,6 @@ class HybridClassifier:
         self.repository = repository
         self.embedder = embedder
         self.rule_classifier = rule_classifier
-        self.use_llm = use_llm
         self.rule_skip_embedding_threshold = rule_skip_embedding_threshold
         self.min_rule_matches_for_skip = min_rule_matches_for_skip
         self.use_embedding_for_no_rule = use_embedding_for_no_rule
@@ -270,8 +268,5 @@ class HybridClassifier:
         duplicate_value = duplicate_scores.get(predicted_category, 0.0)
         if duplicate_value > 0:
             parts.append(f"duplicate={duplicate_value:.3f}")
-
-        if self.use_llm:
-            parts.append("llm=placeholder")
 
         return " | ".join(parts)
