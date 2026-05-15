@@ -1,8 +1,9 @@
 @echo off
 cd /d "%~dp0"
-if exist ".venv\Scripts\python.exe" (
-  ".venv\Scripts\python.exe" app_gui.py
+if exist ".venv\Scripts\pythonw.exe" (
+  start "" ".venv\Scripts\pythonw.exe" app_gui.py
+) else if exist "C:\Windows\pyw.exe" (
+  start "" "C:\Windows\pyw.exe" app_gui.py
 ) else (
-  python app_gui.py
+  start "" pythonw app_gui.py
 )
-pause

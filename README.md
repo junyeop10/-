@@ -10,24 +10,34 @@
 
 ## 현재 범위
 
-- 지원 입력: `txt`, `pdf`
+- 지원 입력: `txt`, `pdf`, `docx`, `xlsx`, `pptx`
 - 실행 방식: CLI, Tkinter GUI
 - 분류 방식: 룰 기반 + 피드백 기반 보정 + 선택적 임베딩 유사도
 - 저장 방식: SQLite
 - 중복 처리: `xxhash64` 기반 중복 감지
-- OCR: 아직 미구현
+- OCR: PDF 텍스트 추출 실패 파일에 한해 병렬 OCR fallback 지원
+
+## 기록 문서
+
+- 작업 상세 기록: [CHANGELOG.md](/C:/Users/jyok3/OneDrive/바탕%20화면/파일분류/CHANGELOG.md)
+- 발표용 버전 기록: [docs/version-history.md](/C:/Users/jyok3/OneDrive/바탕%20화면/파일분류/docs/version-history.md)
 
 ## 주요 기능
 
 - SQLite 기반 분류 이력 저장
 - `files`, `classifications`, `feedback_logs`, `confirmed_examples`, `rules` 테이블 생성
-- txt/pdf 텍스트 추출
+- txt/pdf/docx/xlsx/pptx 텍스트 추출
 - 긴 문서에서 처음/중간/마지막 구간을 샘플링해 최대 4500자 evidence text 생성
+- 텍스트가 없는 스캔 PDF는 최대 5페이지까지 병렬 OCR로 보조 추출
 - 키워드 룰 + 문맥 룰 기반 1차 분류
 - 사용자 확정/수정 결과 저장
 - 반복 수정 패턴 기반 룰 후보 제안
 - `--fast` 모드에서 멀티프로세싱 기반 빠른 분류
 - Tkinter GUI 및 드래그 앤 드롭 지원
+- GUI는 메인 화면을 먼저 띄우고 임베딩 모델은 백그라운드에서 로드
+- `--use-llm` 옵션으로 애매한 문서에만 Ollama 기반 로컬 LLM 보조 판단 사용
+- OCR을 사용한 문서는 분류 결과의 `reason`과 `ocr` 표시로 확인 가능
+- 한국어 중심 분류에 더해 영어 키워드도 일부 지원
 
 ## 현재 분류 로직
 
@@ -120,6 +130,28 @@ GUI 실행:
 .\run_gui.bat
 ```
 
+콘솔 창 없이 GUI만 실행:
+
+```powershell
+.\run_gui.vbs
+```
+
+애매한 문서에만 로컬 LLM 보조 판단 사용:
+
+```powershell
+.\.venv\Scripts\python.exe app.py classify --fast --use-llm
+```
+
+OCR fallback 최적화 옵션:
+
+```powershell
+.\.venv\Scripts\python.exe app.py classify --fast --ocr-workers 1 --ocr-min-chars 100
+```
+
+- 파일명에 `사업자등록증`, `법인등기부등본`, `등기부`, `사업자`, `등록증` 같은 강한 힌트가 있으면 OCR을 생략합니다.
+- PDF 텍스트 추출 결과가 기본값 `100자` 이상이면 OCR을 생략합니다.
+- OCR이 실행되거나 생략된 이유는 로그와 결과의 `ocr:` 표시에서 확인할 수 있습니다.
+
 ## 입력 파일
 
 `input_files` 폴더에 `txt`, `pdf` 파일을 넣고 실행합니다.
@@ -141,6 +173,8 @@ GUI 실행:
 ## GitHub 업로드 가이드
 
 이 저장소에는 코드와 설정만 올리고, 실제 문서와 로컬 실행 산출물은 제외하는 방식을 권장합니다.
+
+작업 기록은 루트의 `CHANGELOG.md`에 누적합니다.
 
 현재 `.gitignore`로 제외되는 항목:
 

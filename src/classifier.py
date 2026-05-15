@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.feedback import build_rule_suggestions
-from src.rule_classifier import RuleBasedClassifier
+from src.rule_classifier import RuleBasedClassifier, build_rule_input_text
 from src.storage import ClassificationRepository
 from src.vectorizer import SentenceTransformerEmbedder
 
@@ -21,6 +21,7 @@ class ClassificationResult:
     final_score: float
     rule_score: float
     embedding_score: float
+    llm_score: float
     feedback_score: float
     duplicate_score: float
     similarity_score: float
@@ -62,6 +63,7 @@ class HybridClassifier:
         file_hash: str,
         text: str,
         duplicate_of_file_id: int | None,
+        file_name: str | None = None,
     ) -> ClassificationResult:
         """Classify evidence text and return final recommendation."""
         del file_id
@@ -70,7 +72,7 @@ class HybridClassifier:
             raise ValueError("No categories are available.")
 
         normalized_text = self.rule_classifier.normalize_text(text)
-        rule_breakdown = self.rule_classifier.score_text(normalized_text)
+        rule_breakdown = self.rule_classifier.score_text(build_rule_input_text(normalized_text, file_name))
         return self.classify_with_rule_breakdown(
             file_hash=file_hash,
             text=normalized_text,
@@ -112,7 +114,10 @@ class HybridClassifier:
         )
 
         query_embedding: list[float] = []
-        embedding_breakdown: dict[str, Any] = {"scores": {category: 0.0 for category in categories}, "top_examples": {}}
+        embedding_breakdown: dict[str, Any] = {
+            "scores": {category: 0.0 for category in categories},
+            "top_examples": {},
+        }
 
         if should_use_embedding:
             if precomputed_query_embedding is not None:
@@ -173,6 +178,7 @@ class HybridClassifier:
             final_score=confidence,
             rule_score=rule_scores.get(predicted_category, 0.0),
             embedding_score=similarity_score,
+            llm_score=0.0,
             feedback_score=feedback_scores.get(predicted_category, 0.0),
             duplicate_score=duplicate_scores.get(predicted_category, 0.0),
             similarity_score=similarity_score,
@@ -191,7 +197,7 @@ class HybridClassifier:
             predicted_category=result.predicted_category,
             rule_score=result.rule_score,
             embedding_score=result.embedding_score,
-            llm_score=0.0,
+            llm_score=result.llm_score,
             final_score=result.final_score,
             candidate_scores_json=json.dumps(result.candidate_scores, ensure_ascii=False),
             reasoning=result.reasoning,

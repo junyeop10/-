@@ -10,10 +10,12 @@ from src.text_cleaner import normalize_text
 
 
 WEAK_KEYWORDS: dict[str, set[str]] = {
-    "계약": {"갑", "을", "용역"},
-    "계약서": {"갑", "을", "용역"},
+    "계약서": {"갑", "을", "용역", "계약"},
     "보고서": {"결과", "분석", "현황", "성과", "요약"},
     "데이터": {"행", "열"},
+    "공고": {"공고", "모집"},
+    "사업자등록증": {"상호", "법인명", "대표자"},
+    "법인등기부등본": {"상호", "본점", "목적"},
 }
 
 CONTEXT_RULES: list[dict[str, Any]] = [
@@ -24,19 +26,7 @@ CONTEXT_RULES: list[dict[str, Any]] = [
         "weight": 4.0,
     },
     {
-        "category": "공고문",
-        "label": "문맥: 모집+신청+접수",
-        "required": ["모집", "신청", "접수"],
-        "weight": 4.0,
-    },
-    {
         "category": "공고",
-        "label": "문맥: 공고+지원+제출서류",
-        "required": ["공고", "지원", "제출서류"],
-        "weight": 4.0,
-    },
-    {
-        "category": "공고문",
         "label": "문맥: 공고+지원+제출서류",
         "required": ["공고", "지원", "제출서류"],
         "weight": 4.0,
@@ -61,7 +51,7 @@ CONTEXT_RULES: list[dict[str, Any]] = [
     },
     {
         "category": "과업지시서",
-        "label": "문맥: 수행일정+결과물 제출",
+        "label": "문맥: 수행일정+결과물제출",
         "required": ["수행일정", "결과물 제출"],
         "weight": 4.0,
     },
@@ -96,9 +86,33 @@ CONTEXT_RULES: list[dict[str, Any]] = [
         "weight": 4.0,
     },
     {
+        "category": "사업자등록증",
+        "label": "문맥: 사업자등록번호+개업연월일+대표자",
+        "required": ["사업자등록번호", "개업연월일", "대표자"],
+        "weight": 4.0,
+    },
+    {
+        "category": "법인등기부등본",
+        "label": "문맥: 상호+본점+회사성립연월일",
+        "required": ["상호", "본점", "회사성립연월일"],
+        "weight": 4.0,
+    },
+    {
+        "category": "법인등기부등본",
+        "label": "문맥: 등기기록+상호+목적",
+        "required": ["등기기록", "상호", "목적"],
+        "weight": 4.0,
+    },
+    {
         "category": "데이터",
         "label": "문맥: csv+데이터셋+레코드",
         "required": ["csv", "데이터셋", "레코드"],
+        "weight": 4.0,
+    },
+    {
+        "category": "사업계획서",
+        "label": "문맥: 사업계획+추진전략+목표시장",
+        "required": ["사업계획", "추진전략", "목표시장"],
         "weight": 4.0,
     },
 ]
@@ -131,6 +145,8 @@ class RuleBasedClassifier:
 
 def score_text_with_rules(text: str, rules: list[dict[str, Any]]) -> dict[str, Any]:
     """Score normalized text with serializable rule dictionaries."""
+    normalized_text = normalize_text(text)
+    compact_text = normalized_text.replace(" ", "")
     scores: dict[str, float] = {}
     matches: dict[str, list[str]] = {}
 
@@ -141,36 +157,68 @@ def score_text_with_rules(text: str, rules: list[dict[str, Any]]) -> dict[str, A
         scores.setdefault(category, 0.0)
         matches.setdefault(category, [])
 
-        if _is_match(text=text, rule_type=rule_type, pattern=pattern):
+        if _is_match(text=normalized_text, compact_text=compact_text, rule_type=rule_type, pattern=pattern):
             scores[category] += _rule_weight(category, pattern, float(rule.get("weight", 1.0)))
             matches[category].append(pattern)
 
-    _apply_context_rules(text=text, scores=scores, matches=matches)
+    _apply_context_rules(text=normalized_text, compact_text=compact_text, scores=scores, matches=matches)
     return {"scores": scores, "matches": matches}
+
+
+def build_rule_input_text(text: str, file_name: str | None = None) -> str:
+    """Combine evidence text with a normalized file name for rule-only hints."""
+    normalized_text = normalize_text(text)
+    if not file_name:
+        return normalized_text
+
+    normalized_name = normalize_text(file_name.rsplit(".", 1)[0])
+    if not normalized_name:
+        return normalized_text
+    if normalized_text:
+        return f"{normalized_name} {normalized_text}"
+    return normalized_name
 
 
 def _rule_weight(category: str, pattern: str, base_weight: float) -> float:
     """Lower the impact of weak standalone words."""
-    normalized_pattern = pattern.lower().strip()
+    normalized_pattern = normalize_text(pattern)
     if normalized_pattern in WEAK_KEYWORDS.get(category, set()):
         return min(base_weight, 0.25)
     return base_weight
 
 
-def _apply_context_rules(text: str, scores: dict[str, float], matches: dict[str, list[str]]) -> None:
+def _apply_context_rules(
+    text: str,
+    compact_text: str,
+    scores: dict[str, float],
+    matches: dict[str, list[str]],
+) -> None:
     """Add stronger scores when several related clues appear together."""
     for rule in CONTEXT_RULES:
         category = str(rule["category"])
-        required = [str(keyword).lower() for keyword in rule["required"]]
-        if all(keyword in text for keyword in required):
+        required = [normalize_text(str(keyword)) for keyword in rule["required"]]
+        if all(_contains_keyword(text=text, compact_text=compact_text, pattern=keyword) for keyword in required):
             scores[category] = scores.get(category, 0.0) + float(rule["weight"])
             matches.setdefault(category, []).append(str(rule["label"]))
 
 
-def _is_match(text: str, rule_type: str, pattern: str) -> bool:
+def _contains_keyword(text: str, compact_text: str, pattern: str) -> bool:
+    """Match both spaced and compact forms of a keyword phrase."""
+    normalized_pattern = normalize_text(pattern)
+    if not normalized_pattern:
+        return False
+
+    if normalized_pattern in text:
+        return True
+
+    compact_pattern = normalized_pattern.replace(" ", "")
+    return bool(compact_pattern) and compact_pattern in compact_text
+
+
+def _is_match(text: str, compact_text: str, rule_type: str, pattern: str) -> bool:
     """Check keyword or regex rule matching."""
     if rule_type == "keyword":
-        return pattern.lower() in text
+        return _contains_keyword(text=text, compact_text=compact_text, pattern=pattern)
     if rule_type == "regex":
         return re.search(pattern, text, re.IGNORECASE) is not None
     return False

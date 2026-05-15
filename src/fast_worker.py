@@ -8,7 +8,7 @@ from typing import Any
 
 from src.file_reader import extract_text_from_file
 from src.hash_utils import compute_xxhash64
-from src.rule_classifier import score_text_with_rules
+from src.rule_classifier import build_rule_input_text, score_text_with_rules
 from src.text_cleaner import normalize_text
 
 
@@ -29,7 +29,8 @@ def process_file_fast(file_path_text: str, rules: list[dict[str, Any]]) -> dict[
         timings["preprocess_time"] = time.perf_counter() - clean_start
 
         rule_start = time.perf_counter()
-        rule_breakdown = score_text_with_rules(normalized_text, rules)
+        rule_input_text = build_rule_input_text(normalized_text, file_path.name)
+        rule_breakdown = score_text_with_rules(rule_input_text, rules)
         timings["rule_time"] = time.perf_counter() - rule_start
 
         timings["worker_time"] = time.perf_counter() - worker_start
@@ -42,6 +43,12 @@ def process_file_fast(file_path_text: str, rules: list[dict[str, Any]]) -> dict[
             "xxhash64": file_hash,
             "evidence_text": normalized_text,
             "rule_breakdown": rule_breakdown,
+            "ocr_used": False,
+            "ocr_pages": 0,
+            "ocr_error": "",
+            "ocr_status": "not_checked",
+            "ocr_reason": "",
+            "classification_hint": None,
             "timings": timings,
             "error": "",
         }
@@ -56,6 +63,12 @@ def process_file_fast(file_path_text: str, rules: list[dict[str, Any]]) -> dict[
             "xxhash64": "",
             "evidence_text": "",
             "rule_breakdown": {"scores": {}, "matches": {}},
+            "ocr_used": False,
+            "ocr_pages": 0,
+            "ocr_error": "",
+            "ocr_status": "not_checked",
+            "ocr_reason": "",
+            "classification_hint": None,
             "timings": timings,
             "error": str(error),
         }

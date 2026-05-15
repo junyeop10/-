@@ -100,11 +100,12 @@ class ClassificationRepository:
     def seed_rules_from_categories(self, categories: dict[str, list[str]]) -> None:
         """categories.json 내용을 초기 keyword 규칙으로 저장합니다."""
         with self.connect() as connection:
+            connection.execute("DELETE FROM rules WHERE source = 'categories_json'")
             for category, keywords in categories.items():
                 for keyword in keywords:
                     connection.execute(
                         """
-                        INSERT OR IGNORE INTO rules (
+                        INSERT INTO rules (
                             category, rule_type, pattern, weight, status, source
                         )
                         VALUES (?, 'keyword', ?, 1.0, 'active', 'categories_json')

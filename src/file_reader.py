@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.office_reader import extract_docx_text, extract_pptx_text, extract_xlsx_text
 from src.pdf_reader import extract_pdf_text
 from src.text_cleaner import build_sampled_text
 
 
-SUPPORTED_SUFFIXES = {".txt", ".pdf"}
+SUPPORTED_SUFFIXES = {".txt", ".pdf", ".docx", ".xlsx", ".pptx"}
 
 
 def ensure_input_directory(input_dir: str | Path) -> Path:
@@ -19,7 +20,7 @@ def ensure_input_directory(input_dir: str | Path) -> Path:
 
 
 def discover_supported_files(input_dir: str | Path) -> list[Path]:
-    """Find supported txt/pdf files under an input directory."""
+    """Find supported input files under an input directory."""
     directory = ensure_input_directory(input_dir)
     if not directory.is_dir():
         raise NotADirectoryError(f"Input path is not a directory: {directory}")
@@ -56,7 +57,7 @@ def extract_text_from_file(
     total_limit: int = 4500,
     part_limit: int = 1500,
 ) -> str:
-    """Extract evidence text from a txt or pdf file."""
+    """Extract evidence text from a supported file."""
     file_path = Path(path)
 
     if file_path.suffix.lower() == ".txt":
@@ -66,6 +67,25 @@ def extract_text_from_file(
         return extract_pdf_text(
             file_path,
             fast=fast,
+            total_limit=total_limit,
+            part_limit=part_limit,
+        )
+    if file_path.suffix.lower() == ".docx":
+        return extract_docx_text(
+            file_path,
+            total_limit=total_limit,
+            part_limit=part_limit,
+        )
+    if file_path.suffix.lower() == ".xlsx":
+        return extract_xlsx_text(
+            file_path,
+            fast=fast,
+            total_limit=total_limit,
+            part_limit=part_limit,
+        )
+    if file_path.suffix.lower() == ".pptx":
+        return extract_pptx_text(
+            file_path,
             total_limit=total_limit,
             part_limit=part_limit,
         )

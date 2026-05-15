@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,15 @@ from src.classifier import ClassificationResult, HybridClassifier
 from src.fast_worker import process_file_fast
 from src.file_reader import discover_supported_files, ensure_input_directory, extract_text_from_file
 from src.hash_utils import compute_xxhash64
-from src.rule_classifier import RuleBasedClassifier
+from src.llm_support import DEFAULT_OLLAMA_MODEL, aggregate_category_scores, classify_with_ollama, should_use_llm
+from src.ocr_support import (
+    DEFAULT_OCR_MIN_CHARS,
+    OCR_MAX_PAGES,
+    build_filename_hint_evidence,
+    explain_ocr_decision,
+    ocr_pdf_file,
+)
+from src.rule_classifier import RuleBasedClassifier, build_rule_input_text, score_text_with_rules
 from src.storage import ClassificationRepository
 from src.text_cleaner import normalize_text
 from src.vectorizer import SentenceTransformerEmbedder
@@ -26,6 +35,7 @@ MAX_FAST_WORKERS = min(4, os.cpu_count() or 1)
 FAST_MIN_RULE_MATCHES_FOR_SKIP = 1
 FAST_RULE_SKIP_EMBEDDING_THRESHOLD = 0.50
 FAST_LOW_RULE_CONFIDENCE_THRESHOLD = 0.50
+MAX_OCR_WORKERS = min(4, os.cpu_count() or 1)
 
 
 def main() -> None:
@@ -68,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
     classify_parser.add_argument("--review", action="store_true", help="Ask for user confirmation")
     classify_parser.add_argument("--fast", action="store_true", help="Parallel fast mode")
     classify_parser.add_argument("--workers", type=int, default=MAX_FAST_WORKERS, help="Fast mode worker count")
+    classify_parser.add_argument("--ocr-workers", type=int, default=MAX_OCR_WORKERS, help="OCR worker count")
+    classify_parser.add_argument(
+        "--ocr-min-chars",
+        type=int,
+        default=DEFAULT_OCR_MIN_CHARS,
+        help="Skip OCR when extracted text is at least this long",
+    )
+    classify_parser.add_argument("--use-llm", action="store_true", help="Use a local Ollama LLM for ambiguous files")
+    classify_parser.add_argument("--llm-model", default=DEFAULT_OLLAMA_MODEL, help="Ollama model name")
     classify_parser.set_defaults(func=handle_classify)
 
     suggest_parser = subparsers.add_parser("suggest-rules", parents=[common_parent], help="Suggest rules")
@@ -120,7 +139,11 @@ def handle_classify(args: argparse.Namespace) -> None:
             files=files,
             review=args.review,
             max_workers=max(1, min(args.workers, MAX_FAST_WORKERS)),
+            ocr_workers=max(1, min(args.ocr_workers, MAX_OCR_WORKERS)),
+            ocr_min_chars=max(0, args.ocr_min_chars),
             total_start=total_start,
+            use_llm=args.use_llm,
+            llm_model=args.llm_model,
         )
     else:
         summary = process_files_sequential(
@@ -128,7 +151,11 @@ def handle_classify(args: argparse.Namespace) -> None:
             classifier=classifier,
             files=files,
             review=args.review,
+            ocr_workers=max(1, min(args.ocr_workers, MAX_OCR_WORKERS)),
+            ocr_min_chars=max(0, args.ocr_min_chars),
             total_start=total_start,
+            use_llm=args.use_llm,
+            llm_model=args.llm_model,
         )
 
     print_performance_summary(summary)
@@ -140,13 +167,21 @@ def process_files_fast(
     files: list[Path],
     review: bool,
     max_workers: int,
+    ocr_workers: int,
+    ocr_min_chars: int,
     total_start: float,
+    use_llm: bool,
+    llm_model: str,
 ) -> dict[str, Any]:
     """Run extraction and rule scoring in worker processes."""
     rules = serialize_active_rules(repository)
-    print(f"Classify start: {len(files)} files, fast=True, workers={max_workers}")
+    print(
+        f"Classify start: {len(files)} files, fast=True, "
+        f"workers={max_workers}, ocr_workers={ocr_workers}, ocr_min_chars={ocr_min_chars}"
+    )
 
     summary = create_summary(total_files=len(files))
+    llm_runtime: dict[str, bool] = {"available": True}
     worker_results: list[dict[str, Any]] = []
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {
@@ -168,6 +203,7 @@ def process_files_fast(
 
             worker_results.append(worker_result)
 
+    apply_parallel_ocr_fallback(worker_results, rules, ocr_workers=ocr_workers, ocr_min_chars=ocr_min_chars)
     precompute_fast_embeddings(repository, classifier, worker_results)
 
     for worker_result in worker_results:
@@ -175,11 +211,20 @@ def process_files_fast(
             repository=repository,
             classifier=classifier,
             worker_result=worker_result,
+            use_llm=use_llm,
+            llm_model=llm_model,
+            llm_runtime=llm_runtime,
         )
         summary["success"] += 1
         summary["embedding_used"] += int(result.embedding_used)
         summary["embedding_skipped"] += int(not result.embedding_used)
-        print_classification_result(worker_result["file_name"], result, worker_result["timings"])
+        print_classification_result(
+            worker_result["file_name"],
+            result,
+            worker_result["timings"],
+            ocr_status=str(worker_result.get("ocr_status", "not_checked")),
+            ocr_reason=str(worker_result.get("ocr_reason", "")),
+        )
 
         if review:
             review_and_save_feedback(
@@ -241,21 +286,67 @@ def process_files_sequential(
     classifier: HybridClassifier,
     files: list[Path],
     review: bool,
+    ocr_workers: int,
+    ocr_min_chars: int,
     total_start: float,
+    use_llm: bool,
+    llm_model: str,
 ) -> dict[str, Any]:
-    """Run the original sequential classification flow."""
-    print(f"Classify start: {len(files)} files, fast=False")
+    """Run classification sequentially with batched OCR fallback for empty PDFs."""
+    print(
+        f"Classify start: {len(files)} files, fast=False, "
+        f"ocr_workers={ocr_workers}, ocr_min_chars={ocr_min_chars}"
+    )
     summary = create_summary(total_files=len(files))
+    llm_runtime: dict[str, bool] = {"available": True}
+    pending_ocr_records: list[dict[str, Any]] = []
+
     for file_path in files:
-        result = process_single_file(
+        prepared = prepare_sequential_record(file_path, ocr_min_chars=ocr_min_chars)
+        if not prepared["ok"]:
+            summary["failed"] += 1
+            print(f"[failed] {file_path.name}: {prepared['error']}")
+            continue
+
+        if prepared["pending_ocr"]:
+            pending_ocr_records.append(prepared)
+            continue
+
+        result = classify_prepared_record(
             repository=repository,
             classifier=classifier,
-            file_path=file_path,
+            prepared=prepared,
             review=review,
+            use_llm=use_llm,
+            llm_model=llm_model,
+            llm_runtime=llm_runtime,
         )
-        if result is None:
+        summary["success"] += 1
+        summary["embedding_used"] += int(result.embedding_used)
+        summary["embedding_skipped"] += int(not result.embedding_used)
+
+    apply_parallel_ocr_fallback(
+        pending_ocr_records,
+        serialize_active_rules(repository),
+        ocr_workers=ocr_workers,
+        ocr_min_chars=ocr_min_chars,
+    )
+    for prepared in pending_ocr_records:
+        if not str(prepared["evidence_text"]).strip():
             summary["failed"] += 1
+            detail = prepared["ocr_error"] or "no text after OCR"
+            print(f"[failed] {prepared['file_name']}: OCR fallback failed - {detail}")
             continue
+
+        result = classify_prepared_record(
+            repository=repository,
+            classifier=classifier,
+            prepared=prepared,
+            review=review,
+            use_llm=use_llm,
+            llm_model=llm_model,
+            llm_runtime=llm_runtime,
+        )
         summary["success"] += 1
         summary["embedding_used"] += int(result.embedding_used)
         summary["embedding_skipped"] += int(not result.embedding_used)
@@ -268,6 +359,9 @@ def finalize_worker_result(
     repository: ClassificationRepository,
     classifier: HybridClassifier,
     worker_result: dict[str, Any],
+    use_llm: bool,
+    llm_model: str,
+    llm_runtime: dict[str, bool],
 ) -> tuple[ClassificationResult, int]:
     """Save worker output in DB and finish scoring in the main process."""
     duplicate_of_file_id = repository.find_duplicate_file_id(
@@ -291,69 +385,131 @@ def finalize_worker_result(
         rule_breakdown=worker_result["rule_breakdown"],
         precomputed_query_embedding=worker_result.get("precomputed_embedding"),
     )
+    result = maybe_refine_with_llm(
+        result=result,
+        evidence_text=str(worker_result["evidence_text"]),
+        use_llm=use_llm,
+        llm_model=llm_model,
+        llm_runtime=llm_runtime,
+    )
+    result = apply_ocr_reasoning(
+        result=result,
+        ocr_used=bool(worker_result.get("ocr_used")),
+        ocr_pages=int(worker_result.get("ocr_pages", 0)),
+    )
     classification_id = classifier.persist_classification(file_id=file_id, result=result)
     return result, classification_id
 
 
-def process_single_file(
-    repository: ClassificationRepository,
-    classifier: HybridClassifier,
-    file_path: Path,
-    review: bool,
-) -> ClassificationResult | None:
-    """Read, classify, print, and optionally review one file."""
+def prepare_sequential_record(file_path: Path, ocr_min_chars: int) -> dict[str, Any]:
+    """Read one file and prepare metadata before classification."""
     file_start = time.perf_counter()
     try:
         extract_start = time.perf_counter()
         evidence_text = extract_text_from_file(file_path, fast=False)
         read_extract_time = time.perf_counter() - extract_start
     except Exception as error:
-        print(f"[failed] {file_path.name}: read failed - {error}")
-        return None
+        return {
+            "ok": False,
+            "file_path": str(file_path),
+            "file_name": file_path.name,
+            "error": f"read failed - {error}",
+        }
 
     preprocess_start = time.perf_counter()
     normalized_text = normalize_text(evidence_text)
     preprocess_time = time.perf_counter() - preprocess_start
-    if not normalized_text:
-        print(f"[failed] {file_path.name}: no text")
-        return None
 
     try:
         file_hash = compute_xxhash64(file_path)
     except Exception as error:
-        print(f"[failed] {file_path.name}: hash failed - {error}")
-        return None
+        return {
+            "ok": False,
+            "file_path": str(file_path),
+            "file_name": file_path.name,
+            "error": f"hash failed - {error}",
+        }
 
-    duplicate_of_file_id = repository.find_duplicate_file_id(file_hash, str(file_path.resolve()))
+    record = {
+        "ok": True,
+        "file_path": str(file_path),
+        "file_name": file_path.name,
+        "file_ext": file_path.suffix.lower(),
+        "file_size": file_path.stat().st_size,
+        "xxhash64": file_hash,
+        "evidence_text": normalized_text,
+        "rule_breakdown": {"scores": {}, "matches": {}},
+        "ocr_used": False,
+        "ocr_pages": 0,
+        "ocr_error": "",
+        "ocr_status": "not_checked",
+        "ocr_reason": "",
+        "precomputed_embedding": None,
+        "timings": {
+            "read_extract_time": read_extract_time,
+            "preprocess_time": preprocess_time,
+            "rule_time": 0.0,
+            "ocr_time": 0.0,
+            "worker_time": time.perf_counter() - file_start,
+        },
+        "error": "",
+    }
+    apply_ocr_plan(record, ocr_min_chars=ocr_min_chars)
+    return record
+
+
+def classify_prepared_record(
+    repository: ClassificationRepository,
+    classifier: HybridClassifier,
+    prepared: dict[str, Any],
+    review: bool,
+    use_llm: bool,
+    llm_model: str,
+    llm_runtime: dict[str, bool],
+) -> ClassificationResult:
+    """Classify a prepared record and save the result."""
+    duplicate_of_file_id = repository.find_duplicate_file_id(
+        str(prepared["xxhash64"]),
+        str(Path(prepared["file_path"]).resolve()),
+    )
     file_id = repository.upsert_file(
-        file_path=str(file_path.resolve()),
-        file_name=file_path.name,
-        file_ext=file_path.suffix.lower(),
-        file_size=file_path.stat().st_size,
-        xxhash64=file_hash,
+        file_path=str(Path(prepared["file_path"]).resolve()),
+        file_name=str(prepared["file_name"]),
+        file_ext=str(prepared["file_ext"]),
+        file_size=int(prepared["file_size"]),
+        xxhash64=str(prepared["xxhash64"]),
         duplicate_of_file_id=duplicate_of_file_id,
-        extracted_text=normalized_text,
+        extracted_text=str(prepared["evidence_text"]),
     )
 
-    try:
-        result = classifier.classify_file(
-            file_id=file_id,
-            file_hash=file_hash,
-            text=normalized_text,
-            duplicate_of_file_id=duplicate_of_file_id,
-        )
-    except RuntimeError as error:
-        print(f"[failed] {file_path.name}: {error}")
-        return None
+    result = classifier.classify_file(
+        file_id=file_id,
+        file_hash=str(prepared["xxhash64"]),
+        text=str(prepared["evidence_text"]),
+        duplicate_of_file_id=duplicate_of_file_id,
+        file_name=str(prepared["file_name"]),
+    )
+    result = maybe_refine_with_llm(
+        result=result,
+        evidence_text=str(prepared["evidence_text"]),
+        use_llm=use_llm,
+        llm_model=llm_model,
+        llm_runtime=llm_runtime,
+    )
+    result = apply_ocr_reasoning(
+        result=result,
+        ocr_used=bool(prepared.get("ocr_used")),
+        ocr_pages=int(prepared.get("ocr_pages", 0)),
+    )
 
     classification_id = classifier.persist_classification(file_id=file_id, result=result)
-    timings = {
-        "read_extract_time": read_extract_time,
-        "preprocess_time": preprocess_time,
-        "rule_time": 0.0,
-        "worker_time": time.perf_counter() - file_start,
-    }
-    print_classification_result(file_path.name, result, timings)
+    print_classification_result(
+        str(prepared["file_name"]),
+        result,
+        prepared["timings"],
+        ocr_status=str(prepared.get("ocr_status", "not_checked")),
+        ocr_reason=str(prepared.get("ocr_reason", "")),
+    )
 
     if review:
         review_and_save_feedback(
@@ -361,11 +517,125 @@ def process_single_file(
             file_id=file_id,
             classification_id=classification_id,
             predicted_category=result.predicted_category,
-            normalized_text=normalized_text,
+            normalized_text=str(prepared["evidence_text"]),
             result=result,
             classifier=classifier,
-        )
+    )
     return result
+
+
+def apply_ocr_plan(record: dict[str, Any], ocr_min_chars: int) -> None:
+    """Decide whether OCR is needed and keep a loggable reason."""
+    decision = explain_ocr_decision(
+        file_path=str(record["file_path"]),
+        extracted_text=str(record.get("evidence_text", "")),
+        classification_hint=record.get("classification_hint"),
+        min_text_length=ocr_min_chars,
+    )
+    record["classification_hint"] = decision["classification_hint"]
+    record["pending_ocr"] = bool(decision["run_ocr"])
+    record["ocr_reason"] = str(decision["reason"])
+
+    if decision["run_ocr"]:
+        record["ocr_status"] = "queued"
+        print(f"[ocr-run] {record['file_name']}: {record['ocr_reason']}")
+        return
+
+    record["ocr_status"] = "skipped"
+    if decision["classification_hint"]:
+        hint_evidence = decision["hint_evidence"] or build_filename_hint_evidence(
+            str(record["file_path"]),
+            str(decision["classification_hint"]),
+        )
+        current_text = str(record.get("evidence_text", "")).strip()
+        record["evidence_text"] = f"{hint_evidence} {current_text}".strip()
+    print(f"[ocr-skip] {record['file_name']}: {record['ocr_reason']}")
+
+
+def apply_parallel_ocr_fallback(
+    records: list[dict[str, Any]],
+    rules: list[dict[str, Any]],
+    ocr_workers: int,
+    ocr_min_chars: int,
+) -> None:
+    """OCR only the PDF files that still need it after prechecks."""
+    for record in records:
+        if "pending_ocr" not in record:
+            apply_ocr_plan(record, ocr_min_chars=ocr_min_chars)
+
+    targets = [record for record in records if record.get("pending_ocr")]
+    if not targets:
+        return
+
+    max_workers = max(1, min(len(targets), ocr_workers))
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(ocr_pdf_file, str(record["file_path"]), OCR_MAX_PAGES): record
+            for record in targets
+        }
+        for future in as_completed(futures):
+            record = futures[future]
+            try:
+                ocr_result = future.result()
+            except Exception as error:
+                record["ocr_error"] = str(error)
+                record["ocr_status"] = "failed"
+                print(f"[ocr-failed] {record['file_name']}: {record['ocr_error']}")
+                continue
+            merge_ocr_result(record, ocr_result, rules)
+
+
+def merge_ocr_result(
+    record: dict[str, Any],
+    ocr_result: dict[str, Any],
+    rules: list[dict[str, Any]],
+) -> None:
+    """Update a prepared record with OCR text and refreshed rule scores."""
+    record["timings"]["ocr_time"] = float(ocr_result.get("elapsed", 0.0))
+
+    if not ocr_result.get("ok"):
+        record["ocr_error"] = str(ocr_result.get("error", "OCR failed"))
+        record["ocr_status"] = "failed"
+        print(f"[ocr-failed] {record['file_name']}: {record['ocr_error']}")
+        return
+
+    normalized_text = normalize_text(str(ocr_result.get("text", "")))
+    if not normalized_text:
+        record["ocr_error"] = "OCR returned no text"
+        record["ocr_pages"] = int(ocr_result.get("pages_scanned", 0))
+        record["ocr_status"] = "empty"
+        print(f"[ocr-empty] {record['file_name']}: pages={record['ocr_pages']}")
+        return
+
+    rule_start = time.perf_counter()
+    rule_input_text = build_rule_input_text(normalized_text, str(record["file_name"]))
+    rule_breakdown = score_text_with_rules(rule_input_text, rules)
+
+    record["evidence_text"] = normalized_text
+    record["rule_breakdown"] = rule_breakdown
+    record["ocr_used"] = True
+    record["ocr_pages"] = int(ocr_result.get("pages_scanned", 0))
+    record["ocr_error"] = ""
+    record["pending_ocr"] = False
+    record["ocr_status"] = "used"
+    record["timings"]["rule_time"] = time.perf_counter() - rule_start
+    record["timings"]["worker_time"] += float(ocr_result.get("elapsed", 0.0))
+    print(f"[ocr-used] {record['file_name']}: pages={record['ocr_pages']}, chars={len(normalized_text)}")
+
+
+def apply_ocr_reasoning(
+    result: ClassificationResult,
+    ocr_used: bool,
+    ocr_pages: int,
+) -> ClassificationResult:
+    """Append OCR usage to the visible reason string."""
+    if not ocr_used:
+        return result
+
+    return replace(
+        result,
+        reasoning=f"{result.reasoning} | ocr=used(pages={ocr_pages})",
+    )
 
 
 def serialize_active_rules(repository: ClassificationRepository) -> list[dict[str, Any]]:
@@ -412,6 +682,8 @@ def print_classification_result(
     file_name: str,
     result: ClassificationResult,
     timings: dict[str, float],
+    ocr_status: str = "not_checked",
+    ocr_reason: str = "",
 ) -> None:
     """Print a concise classification result."""
     matched_rules = ", ".join(result.matched_rules) if result.matched_rules else "none"
@@ -426,11 +698,16 @@ def print_classification_result(
     print(f"matched_rules: {matched_rules}")
     print(f"similarity: {similarity_text}")
     print(f"review_required: {review_text}")
+    ocr_text = ocr_status
+    if ocr_reason:
+        ocr_text = f"{ocr_status} ({ocr_reason})"
+    print(f"ocr: {ocr_text}")
     print(
         "scores: "
         f"rule={result.rule_score:.3f}, "
         f"embedding={result.embedding_score:.3f}, "
         f"feedback={result.feedback_score:.3f}, "
+        f"llm={result.llm_score:.3f}, "
         f"final={result.final_score:.3f}"
     )
     print(
@@ -438,6 +715,7 @@ def print_classification_result(
         f"read={float(timings.get('read_extract_time', 0.0)):.2f}s, "
         f"preprocess={float(timings.get('preprocess_time', 0.0)):.3f}s, "
         f"rule={float(timings.get('rule_time', 0.0)):.3f}s, "
+        f"ocr={float(timings.get('ocr_time', 0.0)):.2f}s, "
         f"total={float(timings.get('worker_time', 0.0)):.2f}s"
     )
     print(f"reason: {result.reasoning}")
@@ -540,6 +818,46 @@ def load_categories(path: Path) -> dict[str, list[str]]:
     if not path.exists():
         raise FileNotFoundError(f"Category file not found: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def maybe_refine_with_llm(
+    result: ClassificationResult,
+    evidence_text: str,
+    use_llm: bool,
+    llm_model: str,
+    llm_runtime: dict[str, bool],
+) -> ClassificationResult:
+    """Use the local LLM only when the current result is ambiguous."""
+    if not use_llm or not llm_runtime.get("available", True) or not should_use_llm(result.confidence):
+        return result
+
+    try:
+        llm_decision = classify_with_ollama(
+            evidence_text=evidence_text,
+            category_scores=aggregate_category_scores(result.candidate_scores),
+            matched_keywords=result.matched_rules,
+            model=llm_model,
+        )
+    except RuntimeError as error:
+        llm_runtime["available"] = False
+        print(f"LLM skipped: {error}")
+        return result
+
+    llm_confidence = llm_decision.confidence
+    llm_reason = f"{result.reasoning} | llm={llm_decision.reason}"
+    candidate_scores = dict(result.candidate_scores)
+    candidate_scores[llm_decision.recommended_category] = llm_confidence
+
+    return replace(
+        result,
+        predicted_category=llm_decision.recommended_category,
+        confidence=llm_confidence,
+        final_score=llm_confidence,
+        llm_score=llm_confidence,
+        review_required=llm_confidence < 0.8,
+        candidate_scores=candidate_scores,
+        reasoning=llm_reason,
+    )
 
 
 def review_and_save_feedback(
