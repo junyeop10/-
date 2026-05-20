@@ -1,0 +1,50 @@
+{
+  "version": "2.0",
+  "taxonomy_path": "data/categories.json",
+  "database_path": "data/classifier.db",
+  "default_input_dir": "input_files",
+  "scoring": {
+    "rule_weight": 0.45,
+    "embedding_weight": 0.2,
+    "metadata_weight": 0.1,
+    "filename_weight": 0.1,
+    "feedback_weight": 0.1,
+    "duplicate_weight": 0.05,
+    "llm_override_threshold": 0.8,
+    "review_threshold": 0.65,
+    "ambiguity_margin": 0.08,
+    "low_confidence_threshold": 0.55
+  },
+  "ocr": {
+    "backend": "rapidocr",
+    "enabled": true,
+    "min_text_chars": 100,
+    "max_pages": 5,
+    "timeout_seconds": 30,
+    "cache_enabled": true
+  },
+  "llm": {
+    "provider": "ollama",
+    "model": "qwen2.5:3b",
+    "enabled": false,
+    "base_url": "http://127.0.0.1:11434",
+    "timeout_seconds": 45,
+    "api_key_env": ""
+  },
+  "embedding": {
+    "enabled": true,
+    "backend": "hdf5",
+    "path": "data/embeddings.h5",
+    "use_legacy_sqlite_cache": true,
+    "migrate_legacy_cache_on_hit": true,
+    "dual_write_legacy_sqlite": false,
+    "lock_timeout_seconds": 15.0
+  },
+  "filesystem": {
+    "managed_root": "organized_files",
+    "preview_only_default": true,
+    "allow_overwrite": false,
+    "snapshot_dir": "data/snapshots",
+    "manifest_dir": "data/manifests"
+  }
+}

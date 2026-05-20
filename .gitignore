@@ -13,6 +13,10 @@ env/
 # Local data and generated files
 data/*.db
 data/*.db-*
+data/*.h5
+data/*.lock
+data/manifests/
+data/snapshots/
 tests_runtime/
 tmp*/
 scratch/

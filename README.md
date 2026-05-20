@@ -1,211 +1,280 @@
-# 파일 분류 MVP
+# Enterprise Document Classification MVP
 
-사용자 피드백을 바탕으로 문서 분류 정확도를 점진적으로 개선하는 Python 기반 문서 분류 MVP입니다.
+Safety-first document classification and organization pipeline for office files and scanned PDFs.
 
-현재 목표는 모델 fine-tuning 없이 아래 흐름을 안정적으로 운영하는 것입니다.
+This project started as a flat-label classifier and now includes:
 
-```text
-파일 읽기 -> evidence_text 추출 -> 룰/문맥 기반 1차 분류 -> 사용자 검토/수정 -> SQLite 저장 -> 다음 분류에 반영
-```
+- hierarchical classification with `large / middle / small` category support
+- hybrid scoring from rules, embeddings, metadata, filename hints, feedback, duplicates, OCR, and optional LLM fallback
+- transparent feedback logging and rebuildable adaptive boosts
+- preview-first file movement with batch manifests, undo, and restore
+- recovery snapshots, operation journals, and additive SQLite migrations
+- persistent embedding cache for reusable document/query/evidence embeddings
+- GUI category tree interaction, drag-and-drop recategorization, and performance analysis views
 
-## 현재 범위
+## Documentation
 
-- 지원 입력: `txt`, `pdf`, `docx`, `xlsx`, `pptx`
-- 실행 방식: CLI, Tkinter GUI
-- 분류 방식: 룰 기반 + 피드백 기반 보정 + 선택적 임베딩 유사도
-- 저장 방식: SQLite
-- 중복 처리: `xxhash64` 기반 중복 감지
-- OCR: PDF 텍스트 추출 실패 파일에 한해 병렬 OCR fallback 지원
+- [Presentation Summary](docs/presentation-summary.md)
+- [Version History](docs/version-history.md)
+- [Embedding Storage Design](docs/embedding-storage.md)
+- [Architecture](docs/architecture.md)
+- [Recovery Guide](docs/recovery-guide.md)
+- [Feedback Learning Guide](docs/feedback-learning.md)
+- [Operator Safety](docs/operator-safety.md)
+- [Developer Progress Report](docs/developer-progress-report.md)
 
-## 기록 문서
+## Supported Inputs
 
-- 작업 상세 기록: [CHANGELOG.md](/C:/Users/jyok3/OneDrive/바탕%20화면/파일분류/CHANGELOG.md)
-- 발표용 버전 기록: [docs/version-history.md](/C:/Users/jyok3/OneDrive/바탕%20화면/파일분류/docs/version-history.md)
+- `txt`
+- `pdf`
+- `docx`
+- `xlsx`
+- `pptx`
 
-## 주요 기능
+## Core Safety Defaults
 
-- SQLite 기반 분류 이력 저장
-- `files`, `classifications`, `feedback_logs`, `confirmed_examples`, `rules` 테이블 생성
-- txt/pdf/docx/xlsx/pptx 텍스트 추출
-- 긴 문서에서 처음/중간/마지막 구간을 샘플링해 최대 4500자 evidence text 생성
-- 텍스트가 없는 스캔 PDF는 최대 5페이지까지 병렬 OCR로 보조 추출
-- 키워드 룰 + 문맥 룰 기반 1차 분류
-- 사용자 확정/수정 결과 저장
-- 반복 수정 패턴 기반 룰 후보 제안
-- `--fast` 모드에서 멀티프로세싱 기반 빠른 분류
-- Tkinter GUI 및 드래그 앤 드롭 지원
-- GUI는 메인 화면을 먼저 띄우고 임베딩 모델은 백그라운드에서 로드
-- `--use-llm` 옵션으로 애매한 문서에만 Ollama 기반 로컬 LLM 보조 판단 사용
-- OCR을 사용한 문서는 분류 결과의 `reason`과 `ocr` 표시로 확인 가능
-- 한국어 중심 분류에 더해 영어 키워드도 일부 지원
+- actual file movement is never the default
+- use `preview_move` first
+- `commit_move` is required for real relocation
+- restore paths are conflict-safe
+- feedback-derived learning is rebuildable and removable
+- recovery snapshots are available through the CLI
+- duplicate detection is active through `xxhash64`
+- embedding reuse is supported through a persistent SQLite cache
 
-## 현재 분류 로직
-
-- 강한 문맥 룰이 있으면 우선 추천합니다.
-- 약한 단일 키워드만 맞는 경우 `검토필요`로 보냅니다.
-- `--fast` 모드에서는 속도를 우선해 임베딩을 대부분 생략합니다.
-- 일반 모드에서는 확정 예시가 쌓인 뒤 sentence-transformers 기반 유사도 보정을 사용할 수 있습니다.
-
-예시 문맥 룰:
-
-- `모집 + 신청 + 접수` -> 공고/공고문
-- `공고 + 지원 + 제출서류` -> 공고/공고문
-- `갑 + 을 + 계약기간` -> 계약서
-- `과업내용 + 용역목적` -> 과업지시서
-- `세금계산서 + 공급가액 + 합계금액` -> 청구서
-
-## 프로젝트 구조
+## Project Layout
 
 ```text
-app.py                  CLI 시작점
-app_gui.py              GUI 시작점
-run_gui.bat             GUI 실행 배치 파일
-requirements.txt        설치 패키지 목록
-data/categories.json    기본 카테고리/키워드
-src/cli.py              CLI 명령 처리
-src/classifier.py       최종 점수 계산과 추천
-src/rule_classifier.py  키워드/문맥 룰 점수 계산
-src/fast_worker.py      fast 모드 worker 처리
-src/vectorizer.py       임베딩 생성과 코사인 유사도 계산
-src/storage.py          SQLite 저장소
-src/file_reader.py      txt/pdf 읽기 진입점
-src/pdf_reader.py       PDF 텍스트 추출
-src/text_cleaner.py     텍스트 정리와 샘플링
-src/hash_utils.py       xxhash 계산
-src/feedback.py         피드백 기반 룰 후보 분석
-src/gui.py              Tkinter GUI
-tests/                  피드백 루프 테스트
+app.py
+app_gui.py
+data/
+  app_config.json
+  categories.json
+src/
+  cli.py
+  classifier.py
+  config.py
+  taxonomy.py
+  storage.py
+  operations.py
+  recovery.py
+  adaptive.py
+tests/
+docs/
 ```
 
-## 설치
+## Install
 
-Python 3.11 이상을 권장합니다.
+Python 3.11+ is recommended.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-## 실행
-
-DB 초기화:
+## Initialize
 
 ```powershell
 .\.venv\Scripts\python.exe app.py init-db
 ```
 
-빠른 분류:
+## Classify Files
+
+Fast mode:
 
 ```powershell
 .\.venv\Scripts\python.exe app.py classify --fast
 ```
 
-검토하면서 분류:
+Fast mode with review:
 
 ```powershell
 .\.venv\Scripts\python.exe app.py classify --fast --review
 ```
 
-일반 분류:
+Sequential mode:
 
 ```powershell
-.\.venv\Scripts\python.exe app.py classify --review
+.\.venv\Scripts\python.exe app.py classify
 ```
 
-룰 후보 제안:
-
-```powershell
-.\.venv\Scripts\python.exe app.py suggest-rules
-```
-
-DB 통계:
-
-```powershell
-.\.venv\Scripts\python.exe app.py stats
-```
-
-GUI 실행:
-
-```powershell
-.\run_gui.bat
-```
-
-콘솔 창 없이 GUI만 실행:
-
-```powershell
-.\run_gui.vbs
-```
-
-애매한 문서에만 로컬 LLM 보조 판단 사용:
+Ambiguous-only LLM routing:
 
 ```powershell
 .\.venv\Scripts\python.exe app.py classify --fast --use-llm
 ```
 
-OCR fallback 최적화 옵션:
+## Inspect the System
+
+Stats:
 
 ```powershell
-.\.venv\Scripts\python.exe app.py classify --fast --ocr-workers 1 --ocr-min-chars 100
+.\.venv\Scripts\python.exe app.py stats
 ```
 
-- 파일명에 `사업자등록증`, `법인등기부등본`, `등기부`, `사업자`, `등록증` 같은 강한 힌트가 있으면 OCR을 생략합니다.
-- PDF 텍스트 추출 결과가 기본값 `100자` 이상이면 OCR을 생략합니다.
-- OCR이 실행되거나 생략된 이유는 로그와 결과의 `ocr:` 표시에서 확인할 수 있습니다.
-
-## 입력 파일
-
-`input_files` 폴더에 `txt`, `pdf` 파일을 넣고 실행합니다.
-
-실제 업무 문서와 개인 문서는 GitHub에 올리지 않도록 `.gitignore`에서 제외합니다.
-
-## 테스트
+Suggest feedback-derived rules:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_feedback_loop -v
+.\.venv\Scripts\python.exe app.py suggest-rules
 ```
 
-검증 내용:
+## Feedback Log Management
 
-- 사용자가 추천 결과를 수정/확정하면 `feedback_logs`에 저장되는지 확인
-- 확정 결과가 `confirmed_examples`에 저장되는지 확인
-- 이후 분류에서 feedback/embedding 점수가 반영되는지 확인
-
-## GitHub 업로드 가이드
-
-이 저장소에는 코드와 설정만 올리고, 실제 문서와 로컬 실행 산출물은 제외하는 방식을 권장합니다.
-
-작업 기록은 루트의 `CHANGELOG.md`에 누적합니다.
-
-현재 `.gitignore`로 제외되는 항목:
-
-- `.venv/`
-- `data/*.db`
-- `input_files/` 내부 실제 문서
-- `tests_runtime/`
-- `scratch/`
-- `__pycache__/`
-- 로컬 백업 폴더와 원본 복사본 파일
-
-권장 업로드 대상:
-
-- `src/`
-- `tests/`
-- `data/categories.json`
-- `README.md`
-- `requirements.txt`
-- 실행 진입점 파일
-
-기본 업로드 순서:
+List logs:
 
 ```powershell
-git status
-git add .
-git commit -m "Clean up LLM placeholder and update README"
-git push
+.\.venv\Scripts\python.exe app.py list_feedback_logs
 ```
 
-## 현재 제한
+Show one log:
 
-- OCR은 아직 구현하지 않았습니다.
-- 모델 fine-tuning은 하지 않습니다.
-- 현재 입력 포맷은 `txt`, `pdf` 중심입니다.
+```powershell
+.\.venv\Scripts\python.exe app.py show_feedback_log --feedback-log-id 1
+```
+
+Delete one log:
+
+```powershell
+.\.venv\Scripts\python.exe app.py delete_feedback_log --feedback-log-id 1
+```
+
+Clear all logs:
+
+```powershell
+.\.venv\Scripts\python.exe app.py clear_feedback_logs
+```
+
+Export logs:
+
+```powershell
+.\.venv\Scripts\python.exe app.py export_feedback_logs --output-path data/feedback_logs_export.json
+```
+
+Rebuild adaptive learning:
+
+```powershell
+.\.venv\Scripts\python.exe app.py rebuild_feedback_learning
+```
+
+## Embedding Cache
+
+Show cache stats:
+
+```powershell
+.\.venv\Scripts\python.exe app.py embedding_cache_stats
+```
+
+Clear cache:
+
+```powershell
+.\.venv\Scripts\python.exe app.py clear_embedding_cache
+```
+
+Rebuild cache:
+
+```powershell
+.\.venv\Scripts\python.exe app.py rebuild_embedding_cache --clear-first
+```
+
+Migrate legacy SQLite cache to HDF5:
+
+```powershell
+.\.venv\Scripts\python.exe app.py migrate_embedding_cache
+```
+
+Backfill confirmed example embeddings to HDF5:
+
+```powershell
+.\.venv\Scripts\python.exe app.py migrate_confirmed_example_embeddings
+```
+
+## Safe File Movement
+
+Preview a move plan:
+
+```powershell
+.\.venv\Scripts\python.exe app.py preview_move
+```
+
+Commit a staged batch:
+
+```powershell
+.\.venv\Scripts\python.exe app.py commit_move --batch-id 1
+```
+
+Undo the latest move:
+
+```powershell
+.\.venv\Scripts\python.exe app.py undo_last_move
+```
+
+Restore a batch:
+
+```powershell
+.\.venv\Scripts\python.exe app.py restore_batch --batch-id 1
+```
+
+Restore a single move item:
+
+```powershell
+.\.venv\Scripts\python.exe app.py restore_file --move-item-id 1
+```
+
+List move history:
+
+```powershell
+.\.venv\Scripts\python.exe app.py list_move_history
+```
+
+## Recovery
+
+Create a snapshot:
+
+```powershell
+.\.venv\Scripts\python.exe app.py create_snapshot --reason "before_bulk_change"
+```
+
+Additional recovery details are documented in:
+
+- [Architecture](docs/architecture.md)
+- [Recovery Guide](docs/recovery-guide.md)
+- [Feedback Learning Guide](docs/feedback-learning.md)
+- [Operator Safety](docs/operator-safety.md)
+- [Developer Progress Report](docs/developer-progress-report.md)
+- [Presentation Summary](docs/presentation-summary.md)
+
+## GUI
+
+Launch the desktop UI:
+
+```powershell
+.\run_gui.bat
+```
+
+The GUI supports:
+
+- embedding-readiness gating before classification starts
+- category-folder style result browsing
+- file drag-and-drop recategorization inside the result tree
+- move preview, move history, feedback log management, and embedding cache management windows
+- startup and classification performance analysis views
+
+Current interaction notes:
+
+- dragging a classified file onto another category updates the classification result and records feedback
+- expanded category folders stay open across in-GUI recategorization refreshes
+- feedback log deletion also removes linked confirmed-example rows so deletion works safely
+- actual filesystem relocation remains safety-first and still uses the preview/commit workflow
+
+## Testing
+
+```powershell
+.\.venv\Scripts\python.exe -m compileall app.py src tests
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+## Known Limitations
+
+- RapidOCR is the primary OCR backend in this MVP stage.
+- Non-Ollama LLM providers are wired as pluggable adapters but may require credentials or endpoint setup.
+- GUI support for move/recovery and feedback administration is not yet as complete as the CLI surface.

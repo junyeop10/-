@@ -1,17 +1,140 @@
 {
-  "계약서": ["계약서", "계약", "갑", "을", "계약금", "용역", "계약기간", "contract", "agreement", "party", "term", "payment"],
-  "보고서": ["보고서", "분석", "결과", "현황", "요약", "성과", "결론", "report", "analysis", "result", "summary", "status", "conclusion"],
-  "발표자료": ["발표자료", "슬라이드", "발표", "agenda", "발표자", "목차", "presentation", "slide", "speaker", "overview"],
-  "데이터": ["csv", "행", "열", "데이터셋", "통계", "레코드", "파일명", "컬럼", "dataset", "table", "record", "column", "sheet"],
-  "영수증": ["영수증", "승인번호", "결제금액", "부가세", "가맹점", "합계", "receipt", "approval no", "total", "vat", "merchant"],
-  "청구서": ["청구서", "세금계산서", "공급가액", "합계금액", "청구금액", "전자세금계산서", "invoice", "bill", "amount due", "tax invoice"],
-  "사업자등록증": ["사업자등록증", "사업자 등록증", "사업자등록번호", "개업연월일", "대표자", "법인명", "상호", "구매자사유", "business registration", "registration number"],
-  "법인등기부등본": ["법인등기부등본", "등기부등본", "등기사항전부증명서", "상호", "본점", "회사성립연월일", "목적", "등기기록", "corporate registry", "registered office"],
-  "벤처기업인증서": ["벤처기업인증서", "벤처기업 확인서", "벤처기업", "확인기관", "유효기간", "인증번호", "venture certificate", "venture company"],
-  "지방세완납증명서": ["지방세완납증명서", "지방세 완납증명서", "완납증명서", "지방세", "납세번호", "체납", "완납", "tax clearance", "local tax"],
-  "중소기업확인서": ["중소기업확인서", "중소기업 확인서", "소기업", "중기업", "확인서", "확인번호", "sme confirmation", "small business"],
-  "재무제표증명": ["재무제표증명", "표준재무제표증명", "재무상태표", "손익계산서", "과세기간", "증명", "financial statement", "balance sheet", "income statement"],
-  "공고": ["모집 공고", "공고", "지원 대상", "신청 기간", "접수 기간", "제출서류", "사업 공고", "notice", "announcement", "application period", "submission"],
-  "사업계획서": ["사업계획서", "사업 계획", "추진 전략", "실행 계획", "목표 시장", "기술 개발", "사업 목적", "business plan", "execution plan", "target market", "strategy"],
-  "과업지시서": ["과업지시서", "과업내용", "용역명", "용역목적", "결과물 제출", "수행일정", "제안요청서", "statement of work", "scope of work", "deliverable", "request for proposal"]
+  "version": "2.0",
+  "categories": [
+    {
+      "large_category": "legal",
+      "middle_category": "계약서",
+      "small_category": null,
+      "flat_label": "계약서",
+      "folder_target": "legal/contracts",
+      "aliases": ["계약", "agreement", "contract"],
+      "keywords": ["계약서", "계약", "갑", "을", "계약기간", "contract", "agreement", "party", "term", "payment"]
+    },
+    {
+      "large_category": "reporting",
+      "middle_category": "보고서",
+      "small_category": null,
+      "flat_label": "보고서",
+      "folder_target": "reporting/reports",
+      "aliases": ["report", "analysis"],
+      "keywords": ["보고서", "분석", "결과", "현황", "요약", "성과", "결론", "report", "analysis", "result", "summary", "status", "conclusion"]
+    },
+    {
+      "large_category": "reporting",
+      "middle_category": "발표자료",
+      "small_category": null,
+      "flat_label": "발표자료",
+      "folder_target": "reporting/presentations",
+      "aliases": ["presentation", "slide"],
+      "keywords": ["발표자료", "슬라이드", "발표", "agenda", "목차", "presentation", "slide", "speaker", "overview"]
+    },
+    {
+      "large_category": "data",
+      "middle_category": "데이터",
+      "small_category": null,
+      "flat_label": "데이터",
+      "folder_target": "data/datasets",
+      "aliases": ["dataset", "table"],
+      "keywords": ["csv", "데이터", "통계", "레코드", "파일명", "컬럼", "dataset", "table", "record", "column", "sheet"]
+    },
+    {
+      "large_category": "finance",
+      "middle_category": "영수증",
+      "small_category": null,
+      "flat_label": "영수증",
+      "folder_target": "finance/receipts",
+      "aliases": ["receipt"],
+      "keywords": ["영수증", "승인번호", "결제금액", "부가세", "가맹점", "합계", "receipt", "approval no", "total", "vat", "merchant"]
+    },
+    {
+      "large_category": "finance",
+      "middle_category": "청구서",
+      "small_category": null,
+      "flat_label": "청구서",
+      "folder_target": "finance/invoices",
+      "aliases": ["invoice", "bill"],
+      "keywords": ["청구서", "세금계산서", "공급가액", "합계금액", "청구금액", "전자세금계산서", "invoice", "bill", "amount due", "tax invoice"]
+    },
+    {
+      "large_category": "corporate",
+      "middle_category": "사업자등록증",
+      "small_category": null,
+      "flat_label": "사업자등록증",
+      "folder_target": "corporate/registrations",
+      "aliases": ["business registration"],
+      "keywords": ["사업자등록증", "사업자등록번호", "개업연월일", "대표자", "법인명", "상호", "사업자", "business registration", "registration number"]
+    },
+    {
+      "large_category": "corporate",
+      "middle_category": "법인등기부등본",
+      "small_category": null,
+      "flat_label": "법인등기부등본",
+      "folder_target": "corporate/registry",
+      "aliases": ["corporate registry", "registry"],
+      "keywords": ["법인등기부등본", "등기부등본", "등기사항증명서", "상호", "본점", "회사성립연월일", "목적", "등기기록", "corporate registry", "registered office"]
+    },
+    {
+      "large_category": "certifications",
+      "middle_category": "벤처기업확인서",
+      "small_category": null,
+      "flat_label": "벤처기업확인서",
+      "folder_target": "certifications/venture",
+      "aliases": ["venture certificate"],
+      "keywords": ["벤처기업확인서", "벤처기업", "확인기간", "유효기간", "인증번호", "venture certificate", "venture company"]
+    },
+    {
+      "large_category": "certifications",
+      "middle_category": "지방세완납증명서",
+      "small_category": null,
+      "flat_label": "지방세완납증명서",
+      "folder_target": "certifications/tax",
+      "aliases": ["tax clearance"],
+      "keywords": ["지방세완납증명서", "지방세", "완납증명서", "세목번호", "체납", "완납", "tax clearance", "local tax"]
+    },
+    {
+      "large_category": "certifications",
+      "middle_category": "중소기업확인서",
+      "small_category": null,
+      "flat_label": "중소기업확인서",
+      "folder_target": "certifications/sme",
+      "aliases": ["sme confirmation"],
+      "keywords": ["중소기업확인서", "중소기업", "확인서", "확인번호", "sme confirmation", "small business"]
+    },
+    {
+      "large_category": "finance",
+      "middle_category": "재무제표증명",
+      "small_category": null,
+      "flat_label": "재무제표증명",
+      "folder_target": "finance/statements",
+      "aliases": ["financial statement"],
+      "keywords": ["재무제표증명", "표준재무제표증명", "재무상태표", "손익계산서", "과세기간", "증명", "financial statement", "balance sheet", "income statement"]
+    },
+    {
+      "large_category": "operations",
+      "middle_category": "공지",
+      "small_category": null,
+      "flat_label": "공지",
+      "folder_target": "operations/notices",
+      "aliases": ["notice", "announcement"],
+      "keywords": ["모집 공고", "공고", "지원 대상", "요청 기간", "접수 기간", "제출서류", "사업 공고", "notice", "announcement", "application period", "submission"]
+    },
+    {
+      "large_category": "planning",
+      "middle_category": "사업계획서",
+      "small_category": null,
+      "flat_label": "사업계획서",
+      "folder_target": "planning/business-plans",
+      "aliases": ["business plan"],
+      "keywords": ["사업계획서", "사업 계획", "추진 전략", "실행 계획", "목표 시장", "기술 개발", "사업 목적", "business plan", "execution plan", "target market", "strategy"]
+    },
+    {
+      "large_category": "operations",
+      "middle_category": "과업지시서",
+      "small_category": null,
+      "flat_label": "과업지시서",
+      "folder_target": "operations/sow",
+      "aliases": ["statement of work", "scope of work"],
+      "keywords": ["과업지시서", "과업내용", "용역명", "용역목적", "결과물 제출", "수행일정", "제안요청서", "statement of work", "scope of work", "deliverable", "request for proposal"]
+    }
+  ]
 }

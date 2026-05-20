@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -24,6 +25,7 @@ def configure_tk_runtime() -> None:
 
 
 configure_tk_runtime()
+os.environ.setdefault("FILE_CLASSIFIER_BOOT_START", str(time.perf_counter()))
 
 from src.gui import main
 

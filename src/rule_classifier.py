@@ -149,20 +149,34 @@ def score_text_with_rules(text: str, rules: list[dict[str, Any]]) -> dict[str, A
     compact_text = normalized_text.replace(" ", "")
     scores: dict[str, float] = {}
     matches: dict[str, list[str]] = {}
+    negative_matches: dict[str, list[str]] = {}
 
     for rule in rules:
         category = str(rule["category"])
-        rule_type = str(rule["rule_type"])
+        rule_type = str(rule.get("rule_type", "keyword"))
         pattern = str(rule["pattern"])
+        rule_scope = str(rule.get("rule_scope", "content"))
+        negative_weight = float(rule.get("negative_weight", 0.0))
         scores.setdefault(category, 0.0)
         matches.setdefault(category, [])
+        negative_matches.setdefault(category, [])
 
-        if _is_match(text=normalized_text, compact_text=compact_text, rule_type=rule_type, pattern=pattern):
+        if _is_match(
+            text=normalized_text,
+            compact_text=compact_text,
+            rule_type=rule_type,
+            pattern=pattern,
+            rule_scope=rule_scope,
+        ):
+            if rule_type in {"negative_keyword", "exclusion"} or negative_weight < 0:
+                scores[category] -= max(abs(negative_weight), abs(float(rule.get("weight", 1.0))))
+                negative_matches[category].append(pattern)
+                continue
             scores[category] += _rule_weight(category, pattern, float(rule.get("weight", 1.0)))
             matches[category].append(pattern)
 
     _apply_context_rules(text=normalized_text, compact_text=compact_text, scores=scores, matches=matches)
-    return {"scores": scores, "matches": matches}
+    return {"scores": scores, "matches": matches, "negative_matches": negative_matches}
 
 
 def build_rule_input_text(text: str, file_name: str | None = None) -> str:
@@ -215,10 +229,14 @@ def _contains_keyword(text: str, compact_text: str, pattern: str) -> bool:
     return bool(compact_pattern) and compact_pattern in compact_text
 
 
-def _is_match(text: str, compact_text: str, rule_type: str, pattern: str) -> bool:
+def _is_match(text: str, compact_text: str, rule_type: str, pattern: str, rule_scope: str = "content") -> bool:
     """Check keyword or regex rule matching."""
-    if rule_type == "keyword":
+    del rule_scope
+    if rule_type in {"keyword", "positive_keyword", "negative_keyword", "exclusion"}:
         return _contains_keyword(text=text, compact_text=compact_text, pattern=pattern)
-    if rule_type == "regex":
+    if rule_type in {"regex", "filename_regex", "metadata_regex"}:
         return re.search(pattern, text, re.IGNORECASE) is not None
+    if rule_type == "token_set":
+        tokens = [normalize_text(part) for part in pattern.split("|") if normalize_text(part)]
+        return bool(tokens) and all(_contains_keyword(text=text, compact_text=compact_text, pattern=token) for token in tokens)
     return False
