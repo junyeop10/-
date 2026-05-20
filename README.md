@@ -2,7 +2,9 @@
 
 Safety-first document classification and organization pipeline for office files and scanned PDFs.
 
-This project started as a flat-label classifier and now includes:
+This project started as a flat-label classifier and is now moving into version 2 as a CPU-first document intelligence system. The target direction is feature extraction, ML type classification, clustering, active learning, and user-feedback-driven improvement without requiring an AI model to read every full document on every run.
+
+The current implementation includes:
 
 - hierarchical classification with `large / middle / small` category support
 - hybrid scoring from rules, embeddings, metadata, filename hints, feedback, duplicates, OCR, and optional LLM fallback
@@ -22,6 +24,7 @@ This project started as a flat-label classifier and now includes:
 - [Feedback Learning Guide](docs/feedback-learning.md)
 - [Operator Safety](docs/operator-safety.md)
 - [Developer Progress Report](docs/developer-progress-report.md)
+- [Version 2 Document Intelligence Architecture](docs/v2-document-intelligence-architecture.md)
 
 ## Supported Inputs
 

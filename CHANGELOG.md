@@ -2,6 +2,16 @@
 
 This file tracks implementation progress in chronological order.
 
+## 2026-05-20
+
+### Version 2 document intelligence direction
+
+- Documented the version 2 direction as a feature-first document intelligence system.
+- Clarified that the project should not depend on full-document AI reading for every run.
+- Added the planned split between rule-based signals, ML type classification, active learning, clustering, and optional LLM assistance.
+- Captured CPU-first implementation guidance for OCR, embeddings, TF-IDF, clustering, and caching.
+- Added future storage concepts for document features, vectors, model runs, category candidates, and multi-tag classification.
+
 ## 2026-05-18
 
 ### Visible processing-route explanation
