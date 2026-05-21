@@ -24,6 +24,8 @@ from src.classifier import (
 from src.cli import build_embedder, load_categories
 from src.embedding_repository import create_embedding_repository
 from src.config import AppConfig, load_app_config
+from src.cluster_candidates import ClusterCandidateFinder
+from src.document_features import DocumentFeatureExtractor
 from src.file_reader import discover_supported_files, ensure_input_directory, extract_text_from_file
 from src.hash_utils import compute_xxhash64
 from src.operations import commit_move_batch, preview_move_plan, restore_batch, restore_file, undo_last_move
@@ -34,6 +36,7 @@ from src.rule_classifier import RuleBasedClassifier
 from src.storage import ClassificationRepository
 from src.taxonomy import Taxonomy, load_taxonomy
 from src.text_cleaner import normalize_text
+from src.type_classifier import TypeClassifier
 from src.vectorizer import SentenceTransformerEmbedder
 
 
@@ -117,6 +120,129 @@ def summarize_processing_methods(payloads: list[dict[str, object]]) -> dict[str,
             continue
         counts[get_primary_processing_method(result)] += 1
     return counts
+
+
+def build_user_rationale_summary(result: ClassificationResult, payload: dict[str, object] | None = None) -> str:
+    """Build a Korean, user-facing explanation without raw debug JSON."""
+    del payload
+    predicted_type = result.predicted_type or result.predicted_category
+    confidence_label = _confidence_label(result.confidence)
+    lines = [
+        f"이 문서는 '{predicted_type}' 유형으로 판단했습니다.",
+        f"분류 신뢰도는 {result.confidence:.3f}로 {confidence_label} 수준입니다.",
+    ]
+
+    if result.review_required:
+        reasons = _translate_review_reasons(result.review_reasons)
+        if reasons:
+            lines.append("다만 " + ", ".join(reasons) + " 때문에 검토가 필요합니다.")
+        else:
+            lines.append("다만 여러 판단 신호가 충분히 강하지 않아 검토가 필요합니다.")
+    else:
+        lines.append("현재 기준으로는 자동 분류해도 되는 문서로 보입니다.")
+
+    evidence_lines: list[str] = []
+    if result.matched_rules:
+        evidence_lines.append(f"규칙 근거: '{result.matched_rules[0]}' 신호가 감지되었습니다.")
+    if result.embedding_used and result.similarity_score > 0:
+        evidence_lines.append(f"유사 문서 근거: 기존 확인 문서와의 유사도가 {result.similarity_score:.3f}입니다.")
+    if result.type_confidence > 0:
+        evidence_lines.append(f"ML 유형 판단: '{predicted_type}' 쪽 점수가 가장 높았습니다.")
+    layout_tags = [str(item.get("tag")) for item in result.suggested_tags if str(item.get("source", "")) == "layout"]
+    if layout_tags:
+        evidence_lines.append("레이아웃 근거: " + ", ".join(layout_tags[:3]) + " 구조와 비슷합니다.")
+    if result.cluster_candidate_id is not None:
+        evidence_lines.append("새 카테고리 후보 그룹에 포함될 가능성이 있어 후보로 저장했습니다.")
+
+    if evidence_lines:
+        lines.append("")
+        lines.append("판단 근거")
+        lines.extend(f"- {line}" for line in evidence_lines)
+
+    tag_names = [str(item.get("tag")) for item in result.suggested_tags if not str(item.get("tag", "")).startswith("type:")]
+    if tag_names:
+        lines.append("")
+        lines.append("추천 태그: " + ", ".join(tag_names[:6]))
+
+    lines.append("")
+    lines.append("자세한 점수와 내부 근거는 '더보기'에서 확인할 수 있습니다.")
+    return "\n".join(lines)
+
+
+def build_debug_detail(result: ClassificationResult, payload: dict[str, object], performance: dict[str, Any]) -> str:
+    """Build the verbose internal detail shown behind the more/less toggle."""
+    matched_rules = ", ".join(result.matched_rules) if result.matched_rules else "없음"
+    similarity_text = f"{result.similarity_score:.3f}" if result.embedding_used else "skipped"
+    analysis = performance.get("analysis", {}) if isinstance(performance, dict) else {}
+    if not isinstance(analysis, dict):
+        analysis = {}
+    stage_timings = performance.get("stage_timings", {}) if isinstance(performance, dict) else {}
+    if not isinstance(stage_timings, dict):
+        stage_timings = {}
+    detail = (
+        "\n\n--- 상세 정보 ---\n"
+        f"파일: {payload.get('file_name', '')}\n"
+        f"경로: {payload.get('file_path', '')}\n"
+        f"추천 카테고리: {result.predicted_category}\n"
+        f"계층: {result.large_category}/{result.middle_category}\n"
+        f"predicted_type: {result.predicted_type or result.predicted_category}\n"
+        f"type_confidence: {result.type_confidence:.3f}\n"
+        f"confidence: {result.confidence:.3f}\n"
+        f"review_required: {'yes' if result.review_required else 'no'}\n"
+        f"review_reasons: {', '.join(result.review_reasons) if result.review_reasons else 'none'}\n"
+        f"suggested_tags: {json.dumps(result.suggested_tags, ensure_ascii=False)}\n"
+        f"cluster_candidate_id: {result.cluster_candidate_id if result.cluster_candidate_id is not None else 'none'}\n"
+        f"processing: {get_processing_trace_text(result)}\n"
+        f"similarity: {similarity_text}\n"
+        f"점수: rule={result.rule_score:.3f}, embedding={result.embedding_score:.3f}, "
+        f"feedback={result.feedback_score:.3f}, final={result.final_score:.3f}\n"
+        f"매칭 규칙: {matched_rules}\n"
+        f"후보 점수: {json.dumps(result.candidate_scores, ensure_ascii=False)}\n"
+        f"ml_evidence: {json.dumps(result.ml_evidence, ensure_ascii=False)}\n"
+        f"rule_evidence: {json.dumps(result.rule_evidence, ensure_ascii=False)}\n"
+        f"근거 원문: {result.reasoning}\n"
+    )
+    stage_lines = "\n".join(
+        f"  - {key}: {float(value):.3f}s"
+        for key, value in sorted(stage_timings.items(), key=lambda item: float(item[1]), reverse=True)
+        if key != "total"
+    )
+    reason_lines = "\n".join(f"  - {reason}" for reason in analysis.get("reasons", []))
+    detail += (
+        f"\nperformance_total: {float(analysis.get('total_time', stage_timings.get('total', 0.0))):.3f}s\n"
+        f"dominant_stage: {analysis.get('dominant_stage', 'unknown')}\n"
+        f"latency_summary: {analysis.get('summary', '')}\n"
+        f"stage_breakdown:\n{stage_lines or '  - no stages recorded'}\n"
+        f"latency_reasons:\n{reason_lines or '  - no latency reasons recorded'}\n"
+    )
+    return detail
+
+
+def _confidence_label(confidence: float) -> str:
+    if confidence >= 0.8:
+        return "높은"
+    if confidence >= 0.6:
+        return "보통"
+    return "낮은"
+
+
+def _translate_review_reasons(reasons: list[str]) -> list[str]:
+    translations = {
+        "low_confidence": "신뢰도가 낮음",
+        "small_margin": "1순위와 2순위 차이가 작음",
+        "rule_ml_conflict": "규칙 판단과 ML 판단이 다름",
+        "embedding_ml_conflict": "유사 문서 판단과 ML 판단이 다름",
+        "low_similarity_new_cluster": "기존 카테고리와 유사도가 낮음",
+        "legacy_ambiguity": "기존 점수 기준에서도 애매함",
+        "pending_category_candidate": "새 카테고리 후보 가능성",
+    }
+    translated: list[str] = []
+    for reason in reasons:
+        if reason.startswith("layout_") and reason.endswith("_conflict"):
+            translated.append("문서 레이아웃과 텍스트 판단이 다름")
+        else:
+            translated.append(translations.get(reason, reason))
+    return translated
 
 
 def upsert_payload_by_file_path(
@@ -250,6 +376,10 @@ class ClassifierGui(BaseWindow):
         self.drag_target_item_id: str | None = None
         self.force_open_categories: set[str] = set()
         self.detail_text: tk.Text | None = None
+        self.detail_more_button: ttk.Button | None = None
+        self.current_detail_summary = ""
+        self.current_detail_debug = ""
+        self.detail_more_expanded = False
         self.stats_label: ttk.Label | None = None
         self.drop_label: ttk.Label | None = None
         self.tree: ttk.Treeview | None = None
@@ -351,7 +481,11 @@ class ClassifierGui(BaseWindow):
         ttk.Label(progress_frame, textvariable=self.progress_text, width=16, anchor="e").pack(side="left", padx=(8, 0))
         ttk.Label(progress_frame, textvariable=self.processing_summary_text, width=28, anchor="e").pack(side="left", padx=(8, 0))
 
-        ttk.Label(right_frame, text="상세 정보").pack(anchor="w")
+        detail_header = ttk.Frame(right_frame)
+        detail_header.pack(fill="x")
+        ttk.Label(detail_header, text="상세 정보").pack(side="left", anchor="w")
+        self.detail_more_button = ttk.Button(detail_header, text="더보기", command=self.toggle_detail_more)
+        self.detail_more_button.pack(side="right")
         self.detail_text = tk.Text(right_frame, height=16, wrap="word")
         self.detail_text.pack(fill="both", expand=True, pady=(4, 10))
 
@@ -464,6 +598,7 @@ class ClassifierGui(BaseWindow):
     def init_db(self) -> None:
         self.resources.repository.initialize_database()
         self.resources.repository.seed_rules_from_categories(load_categories(Path(CATEGORIES_PATH)))
+        self.resources.repository.seed_default_category_profiles()
         self.refresh_stats()
         self.status_text.set("DB 초기화 완료")
 
@@ -479,7 +614,11 @@ class ClassifierGui(BaseWindow):
                 f"confirmed_examples: {stats['confirmed_examples_count']}\n"
                 f"rules: {stats['rules_count']}\n"
                 f"move_batches: {stats.get('move_batches_count', 0)}\n"
-                f"embedding_cache: {stats.get('embedding_cache_count', 0)}"
+                f"embedding_cache: {stats.get('embedding_cache_count', 0)}\n"
+                f"document_features: {stats.get('document_features_count', 0)}\n"
+                f"category_candidates: {stats.get('category_candidates_count', 0)}\n"
+                f"document_tags: {stats.get('document_tags_count', 0)}\n"
+                f"category_profiles: {stats.get('category_profiles_count', 0)}"
             )
         )
 
@@ -529,6 +668,13 @@ class ClassifierGui(BaseWindow):
             repository=self.resources.repository,
             embedder=self.resources.embedder,
             rule_classifier=self.resources.rule_classifier,
+            taxonomy=self.resources.taxonomy,
+            feature_extractor=DocumentFeatureExtractor(version=self.resources.config.features.extractor_version),
+            type_classifier=TypeClassifier(
+                version=self.resources.config.ml.type_classifier_version,
+                min_examples=self.resources.config.ml.min_training_examples,
+                filename_weight=self.resources.config.ml.filename_weight,
+            ),
         )
         self.result_queue.put(("status", f"분류 시작: {len(files)}개"))
 
@@ -595,45 +741,28 @@ class ClassifierGui(BaseWindow):
         )
         stage_timings["db_upsert"] = time.perf_counter() - upsert_start
         classify_start = time.perf_counter()
+        document_features = DocumentFeatureExtractor(version=self.resources.config.features.extractor_version).extract(
+            file_name=file_path.name,
+            file_ext=file_path.suffix.lower(),
+            text=normalized_text,
+            file_size=file_size,
+            file_path=file_path,
+        ).to_storage_dict()
         result = classifier.classify_file(
             file_id=file_id,
             file_hash=file_hash,
             text=normalized_text,
             duplicate_of_file_id=duplicate_of_file_id,
             file_name=file_path.name,
+            document_features=document_features,
         )
         stage_timings["classification"] = time.perf_counter() - classify_start
         if ocr_used:
-            result = ClassificationResult(
-                predicted_category=result.predicted_category,
-                confidence=result.confidence,
-                final_score=result.final_score,
-                rule_score=result.rule_score,
-                embedding_score=result.embedding_score,
-                llm_score=result.llm_score,
-                feedback_score=result.feedback_score,
-                duplicate_score=result.duplicate_score,
-                similarity_score=result.similarity_score,
-                embedding_used=result.embedding_used,
-                review_required=result.review_required,
-                matched_rules=result.matched_rules,
-                candidate_scores=result.candidate_scores,
+            result = replace(
+                result,
                 reasoning=f"{result.reasoning} | ocr=used(pages={ocr_pages})",
-                query_embedding=result.query_embedding,
-                large_category=result.large_category,
-                middle_category=result.middle_category,
-                small_category=result.small_category,
-                large_confidence=result.large_confidence,
-                middle_confidence=result.middle_confidence,
-                small_confidence=result.small_confidence,
-                source_scores=result.source_scores,
-                evidence_snippets=result.evidence_snippets,
-                metadata_signals=result.metadata_signals,
-                classifier_contributions=result.classifier_contributions,
-                explanation=result.explanation,
-                llm_used=result.llm_used,
                 ocr_used=True,
-                processing_profile=result.processing_profile,
+                explanation={**result.explanation, "ocr_used": True, "ocr_pages": ocr_pages},
             )
         classifier_profile = result.processing_profile if isinstance(result.processing_profile, dict) else {}
         classifier_stage_timings = classifier_profile.get("stage_timings", {}) if isinstance(classifier_profile, dict) else {}
@@ -664,6 +793,7 @@ class ClassifierGui(BaseWindow):
             duplicate_detected=duplicate_of_file_id is not None,
         )
         result = replace(result, processing_profile=performance_profile)
+        result = self._attach_cluster_candidate_if_needed(result, file_id=file_id)
         classification_id = classifier.persist_classification(file_id=file_id, result=result)
         stage_timings["db_persist"] = time.perf_counter() - persist_start
         stage_timings["total"] = time.perf_counter() - file_start
@@ -695,6 +825,42 @@ class ClassifierGui(BaseWindow):
             "result": result,
             "performance": performance_profile,
         }
+
+    def _attach_cluster_candidate_if_needed(self, result: ClassificationResult, *, file_id: int) -> ClassificationResult:
+        if not self.resources.config.clustering.enabled or not result.review_required:
+            return result
+        finder = ClusterCandidateFinder(
+            min_cluster_size=self.resources.config.clustering.min_cluster_size,
+            max_candidates=self.resources.config.clustering.max_candidates,
+        )
+        rows = self.resources.repository.fetch_cluster_candidate_rows()
+        rows.append(
+            {
+                "file_id": file_id,
+                "file_name": "",
+                "text": "",
+                "predicted_category": result.predicted_category,
+                "predicted_type": result.predicted_type,
+                "review_required": result.review_required,
+                "compressed_text": " ".join(result.evidence_snippets),
+            }
+        )
+        for candidate in finder.find_candidates(rows):
+            if file_id not in candidate.representative_file_ids:
+                continue
+            candidate_id = self.resources.repository.insert_category_candidate(
+                source=str(candidate.evidence.get("source", "cluster")),
+                suggested_name=candidate.suggested_name,
+                representative_file_ids=candidate.representative_file_ids,
+                evidence=candidate.evidence,
+                status="pending",
+            )
+            return replace(
+                result,
+                cluster_candidate_id=candidate_id,
+                review_reasons=[*result.review_reasons, "pending_category_candidate"],
+            )
+        return result
 
     def _drain_queue(self) -> None:
         while not self.result_queue.empty():
@@ -1080,6 +1246,14 @@ class ClassifierGui(BaseWindow):
             return
 
         self.final_category.set(result.predicted_category)
+        performance = payload.get("performance", {})
+        if not isinstance(performance, dict):
+            performance = {}
+        self.current_detail_summary = build_user_rationale_summary(result, payload)
+        self.current_detail_debug = build_debug_detail(result, payload, performance)
+        self.detail_more_expanded = False
+        self._refresh_detail_text()
+        return
         matched_rules = ", ".join(result.matched_rules) if result.matched_rules else "없음"
         similarity_text = f"{result.similarity_score:.3f}" if result.embedding_used else "skipped"
         performance = payload.get("performance", {})
@@ -1105,6 +1279,15 @@ class ClassifierGui(BaseWindow):
             f"매칭 규칙: {matched_rules}\n"
             f"후보 점수: {json.dumps(result.candidate_scores, ensure_ascii=False)}\n"
             f"근거: {result.reasoning}\n"
+        )
+        detail += (
+            f"predicted_type: {result.predicted_type or result.predicted_category}\n"
+            f"type_confidence: {result.type_confidence:.3f}\n"
+            f"review_reasons: {', '.join(result.review_reasons) if result.review_reasons else 'none'}\n"
+            f"suggested_tags: {json.dumps(result.suggested_tags, ensure_ascii=False)}\n"
+            f"cluster_candidate_id: {result.cluster_candidate_id if result.cluster_candidate_id is not None else 'none'}\n"
+            f"ml_evidence: {json.dumps(result.ml_evidence, ensure_ascii=False)}\n"
+            f"rule_evidence: {json.dumps(result.rule_evidence, ensure_ascii=False)}\n"
         )
         stage_lines = "\n".join(
             f"  - {key}: {float(value):.3f}s"
@@ -1533,7 +1716,12 @@ class ClassifierGui(BaseWindow):
         self._set_progress(0, 0)
         self._update_processing_summary()
         self._refresh_category_options()
+        self.current_detail_summary = ""
+        self.current_detail_debug = ""
+        self.detail_more_expanded = False
         self._set_detail("")
+        if self.detail_more_button is not None:
+            self.detail_more_button.configure(text="더보기")
 
     def _set_detail(self, text: str) -> None:
         if self.detail_text is None:
@@ -1542,6 +1730,20 @@ class ClassifierGui(BaseWindow):
         self.detail_text.delete("1.0", "end")
         self.detail_text.insert("1.0", text)
         self.detail_text.configure(state="disabled")
+
+    def toggle_detail_more(self) -> None:
+        self.detail_more_expanded = not self.detail_more_expanded
+        self._refresh_detail_text()
+
+    def _refresh_detail_text(self) -> None:
+        if self.detail_more_expanded:
+            self._set_detail(f"{self.current_detail_summary}{self.current_detail_debug}")
+            if self.detail_more_button is not None:
+                self.detail_more_button.configure(text="접기")
+            return
+        self._set_detail(self.current_detail_summary)
+        if self.detail_more_button is not None:
+            self.detail_more_button.configure(text="더보기")
 
     def _append_detail(self, text: str) -> None:
         if self.detail_text is None:

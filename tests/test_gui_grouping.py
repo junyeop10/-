@@ -4,6 +4,8 @@ import unittest
 
 from src.classifier import ClassificationResult
 from src.gui import (
+    build_debug_detail,
+    build_user_rationale_summary,
     can_drag_tree_meta,
     drop_target_category_from_meta,
     group_payloads_by_category,
@@ -93,6 +95,27 @@ class GuiGroupingTest(unittest.TestCase):
         result = payloads[0]["result"]
         assert isinstance(result, ClassificationResult)
         self.assertEqual(result.predicted_category, "계약서")
+
+
+    def test_user_rationale_summary_hides_raw_debug_json(self) -> None:
+        payload = self._payload("paper.pdf", "논문")
+        result = payload["result"]
+        assert isinstance(result, ClassificationResult)
+        result.review_required = True
+        result.review_reasons = ["rule_ml_conflict", "small_margin"]
+        result.predicted_type = "논문"
+        result.type_confidence = 0.72
+        result.suggested_tags = [{"tag": "AI", "confidence": 0.75, "source": "feature_rule"}]
+
+        summary = build_user_rationale_summary(result, payload)
+        debug = build_debug_detail(result, payload, {"stage_timings": {}, "analysis": {}})
+
+        self.assertIn("이 문서는 '논문' 유형으로 판단했습니다.", summary)
+        self.assertIn("규칙 판단과 ML 판단이 다름", summary)
+        self.assertIn("더보기", summary)
+        self.assertNotIn("candidate_scores", summary)
+        self.assertIn("후보 점수", debug)
+        self.assertIn("ml_evidence", debug)
 
 
 if __name__ == "__main__":
