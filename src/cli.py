@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from src.adaptive import rebuild_adaptive_learning
+from src.cluster_candidates import ClusterCandidateFinder
 from src.classifier import (
     ClassificationResult,
     HybridClassifier,
@@ -20,6 +21,7 @@ from src.classifier import (
     get_processing_trace_text,
 )
 from src.config import DEFAULT_CONFIG_PATH, AppConfig, default_config, load_app_config
+from src.document_features import DocumentFeatureExtractor
 from src.embedding_repository import (
     create_embedding_repository,
     migrate_sqlite_embedding_cache_to_hdf5,
@@ -48,6 +50,7 @@ from src.rule_classifier import RuleBasedClassifier, build_rule_input_text, scor
 from src.storage import ClassificationRepository
 from src.taxonomy import Taxonomy, load_taxonomy
 from src.text_cleaner import normalize_text
+from src.type_classifier import TypeClassifier
 from src.vectorizer import SentenceTransformerEmbedder
 
 
@@ -118,6 +121,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     stats_parser = subparsers.add_parser("stats", parents=[common_parent], help="Show DB stats")
     stats_parser.set_defaults(func=handle_stats)
+
+    add_profile_parser = subparsers.add_parser("add-category-profile", parents=[common_parent], help="Add a synthetic training category profile")
+    add_profile_parser.add_argument("--type", required=True, dest="category_type", help="Document type/category name")
+    add_profile_parser.add_argument("--text", required=True, help="Natural-language profile text")
+    add_profile_parser.add_argument("--tags", default="", help="Comma-separated tags")
+    add_profile_parser.add_argument("--weight", type=float, default=0.5, help="Synthetic sample weight")
+    add_profile_parser.add_argument("--synthetic-count", type=int, default=5, help="Synthetic rows to generate")
+    add_profile_parser.set_defaults(func=handle_add_category_profile)
+
+    list_profile_parser = subparsers.add_parser("list-category-profiles", parents=[common_parent], help="List category profiles")
+    list_profile_parser.add_argument("--include-inactive", action="store_true", help="Show inactive profiles too")
+    list_profile_parser.set_defaults(func=handle_list_category_profiles)
+
+    deactivate_profile_parser = subparsers.add_parser("deactivate-category-profile", parents=[common_parent], help="Deactivate a category profile")
+    deactivate_profile_parser.add_argument("--profile-id", type=int, required=True, help="Profile id")
+    deactivate_profile_parser.set_defaults(func=handle_deactivate_category_profile)
+
+    debug_training_parser = subparsers.add_parser("debug-training-sources", parents=[common_parent], help="Inspect TypeClassifier training sources")
+    debug_training_parser.set_defaults(func=handle_debug_training_sources)
 
     preview_move_parser = subparsers.add_parser("preview_move", parents=[common_parent], help="Stage a safe move preview")
     preview_move_parser.add_argument("--limit", type=int, default=None, help="Preview only the latest N files")
@@ -216,6 +238,7 @@ def handle_init_db(args: argparse.Namespace) -> None:
     repository = build_repository(args.db, config)
     repository.initialize_database()
     repository.seed_rules_from_categories(load_categories(Path(args.categories)))
+    repository.seed_default_category_profiles()
     repository.save_config_version("app_config", config.version, config.to_dict())
     print(f"DB ready: {Path(args.db).resolve()}")
 
@@ -227,6 +250,7 @@ def handle_classify(args: argparse.Namespace) -> None:
     repository = build_repository(args.db, config)
     repository.initialize_database()
     repository.seed_rules_from_categories(load_categories(Path(args.categories)))
+    repository.seed_default_category_profiles()
     taxonomy = load_runtime_taxonomy(args)
 
     input_dir = Path(args.input_dir)
@@ -245,6 +269,12 @@ def handle_classify(args: argparse.Namespace) -> None:
         min_rule_matches_for_skip=FAST_MIN_RULE_MATCHES_FOR_SKIP if args.fast else 3,
         use_embedding_for_no_rule=not args.fast,
         low_rule_confidence_threshold=FAST_LOW_RULE_CONFIDENCE_THRESHOLD if args.fast else 0.20,
+        feature_extractor=DocumentFeatureExtractor(version=config.features.extractor_version),
+        type_classifier=TypeClassifier(
+            version=config.ml.type_classifier_version,
+            min_examples=config.ml.min_training_examples,
+            filename_weight=config.ml.filename_weight,
+        ),
     )
 
     if args.fast:
@@ -400,14 +430,18 @@ def precompute_fast_embeddings(
         return
 
     try:
-        texts = [str(worker_result["evidence_text"]) for worker_result in embedding_targets]
+        texts = [
+            str(worker_result.get("document_features", {}).get("compressed_text") or worker_result["evidence_text"])
+            for worker_result in embedding_targets
+        ]
         file_hashes = [str(worker_result["xxhash64"]) for worker_result in embedding_targets]
         if isinstance(classifier.embedder, SentenceTransformerEmbedder):
             embeddings = classifier.embedder.encode_many(
                 texts,
                 repository=repository,
                 file_hashes=file_hashes,
-                text_kind="query",
+                text_kind="compressed_query",
+                embedding_version="2.1-compressed",
             )
             embedding_meta_rows = classifier.embedder.get_last_batch_encode_meta()
         else:
@@ -558,6 +592,8 @@ def finalize_worker_result(
         precomputed_query_embedding=worker_result.get("precomputed_embedding"),
         precomputed_embedding_meta=worker_result.get("precomputed_embedding_meta"),
         file_name=str(worker_result["file_name"]),
+        file_id=file_id,
+        document_features=worker_result.get("document_features"),
     )
     timings["classification"] = time.perf_counter() - classify_start
     result = maybe_refine_with_llm(
@@ -584,6 +620,7 @@ def finalize_worker_result(
         ocr_pages=int(worker_result.get("ocr_pages", 0)),
         duplicate_detected=duplicate_of_file_id is not None,
     )
+    result = attach_cluster_candidate_if_needed(repository, result, file_id=file_id, config=config)
     classification_id = classifier.persist_classification(file_id=file_id, result=result)
     timings["db_persist"] = time.perf_counter() - persist_start
     timings["total"] = timings.get("worker_time", 0.0) + timings["duplicate_lookup"] + timings["db_upsert"] + timings["classification"] + timings["db_persist"]
@@ -637,6 +674,13 @@ def prepare_sequential_record(file_path: Path, ocr_min_chars: int) -> dict[str, 
         "file_size": file_path.stat().st_size,
         "xxhash64": file_hash,
         "evidence_text": normalized_text,
+        "document_features": DocumentFeatureExtractor().extract(
+            file_name=file_path.name,
+            file_ext=file_path.suffix.lower(),
+            text=normalized_text,
+            file_size=file_path.stat().st_size,
+            file_path=file_path,
+        ).to_storage_dict(),
         "rule_breakdown": {"scores": {}, "matches": {}},
         "ocr_used": False,
         "ocr_pages": 0,
@@ -720,6 +764,7 @@ def classify_prepared_record(
         ocr_pages=int(prepared.get("ocr_pages", 0)),
         duplicate_detected=duplicate_of_file_id is not None,
     )
+    result = attach_cluster_candidate_if_needed(repository, result, file_id=file_id, config=config)
     classification_id = classifier.persist_classification(file_id=file_id, result=result)
     timings["db_persist"] = time.perf_counter() - persist_start
     timings["total"] = sum(float(value) for value in timings.values())
@@ -842,6 +887,13 @@ def merge_ocr_result(
     rule_breakdown = score_text_with_rules(rule_input_text, rules)
 
     record["evidence_text"] = normalized_text
+    record["document_features"] = DocumentFeatureExtractor().extract(
+        file_name=str(record["file_name"]),
+        file_ext=str(record.get("file_ext", "")),
+        text=normalized_text,
+        file_size=int(record.get("file_size", 0)),
+        file_path=str(record["file_path"]),
+    ).to_storage_dict()
     record["rule_breakdown"] = rule_breakdown
     record["ocr_used"] = True
     record["ocr_pages"] = int(ocr_result.get("pages_scanned", 0))
@@ -914,6 +966,53 @@ def attach_result_performance_profile(
     return replace(result, processing_profile=profile)
 
 
+def attach_cluster_candidate_if_needed(
+    repository: ClassificationRepository,
+    result: ClassificationResult,
+    *,
+    file_id: int,
+    config: AppConfig,
+) -> ClassificationResult:
+    """Create a conservative pending category candidate for review/misc groups."""
+    if not config.clustering.enabled or not result.review_required:
+        return result
+    finder = ClusterCandidateFinder(
+        min_cluster_size=config.clustering.min_cluster_size,
+        max_candidates=config.clustering.max_candidates,
+    )
+    rows = repository.fetch_cluster_candidate_rows()
+    rows.append(
+        {
+            "file_id": file_id,
+            "file_name": "",
+            "text": "",
+            "predicted_category": result.predicted_category,
+            "predicted_type": result.predicted_type,
+            "review_required": result.review_required,
+            "compressed_text": " ".join(
+                str(snippet) for snippet in result.evidence_snippets if isinstance(snippet, str)
+            ),
+        }
+    )
+    candidates = finder.find_candidates(rows)
+    for candidate in candidates:
+        if file_id not in candidate.representative_file_ids:
+            continue
+        candidate_id = repository.insert_category_candidate(
+            source=str(candidate.evidence.get("source", "cluster")),
+            suggested_name=candidate.suggested_name,
+            representative_file_ids=candidate.representative_file_ids,
+            evidence=candidate.evidence,
+            status="pending",
+        )
+        return replace(
+            result,
+            cluster_candidate_id=candidate_id,
+            review_reasons=[*result.review_reasons, "pending_category_candidate"],
+        )
+    return result
+
+
 def serialize_active_rules(repository: ClassificationRepository) -> list[dict[str, Any]]:
     """Return active rules as pickle-safe dictionaries."""
     return [
@@ -976,10 +1075,19 @@ def print_classification_result(
     print("=" * 48)
     print(f"file: {file_name}")
     print(f"category: {result.large_category}/{result.middle_category or result.predicted_category}")
+    print(f"predicted_type: {result.predicted_type or result.predicted_category}")
+    print(f"type_confidence: {result.type_confidence:.3f}")
     print(f"confidence: {result.confidence:.3f}")
     print(f"matched_rules: {matched_rules}")
     print(f"similarity: {similarity_text}")
     print(f"review_required: {review_text}")
+    if result.review_reasons:
+        print("review_reasons: " + " | ".join(result.review_reasons))
+    if result.suggested_tags:
+        tag_text = ", ".join(f"{item.get('tag')}:{float(item.get('confidence', 0.0)):.2f}" for item in result.suggested_tags)
+        print(f"suggested_tags: {tag_text}")
+    if result.cluster_candidate_id is not None:
+        print(f"cluster_candidate_id: {result.cluster_candidate_id}")
     print(f"processing: {get_processing_trace_text(result)}")
     print(f"primary_method: {get_processing_method_label(result)}")
     ocr_text = ocr_status
@@ -1106,6 +1214,10 @@ def handle_stats(args: argparse.Namespace) -> None:
     print(f"- snapshots: {stats['snapshots_count']}")
     print(f"- adaptive_rules: {stats['adaptive_rules_count']}")
     print(f"- embedding_cache: {stats['embedding_cache_count']}")
+    print(f"- document_features: {stats.get('document_features_count', 0)}")
+    print(f"- category_candidates: {stats.get('category_candidates_count', 0)}")
+    print(f"- document_tags: {stats.get('document_tags_count', 0)}")
+    print(f"- category_profiles: {stats.get('category_profiles_count', 0)}")
     print("")
     print("Recent feedback")
 
@@ -1120,10 +1232,113 @@ def handle_stats(args: argparse.Namespace) -> None:
         )
 
 
-def handle_preview_move(args: argparse.Namespace) -> None:
+def handle_add_category_profile(args: argparse.Namespace) -> None:
+    repository = build_repository(args.db, load_runtime_config(args))
+    repository.initialize_database()
+    tags = [tag.strip() for tag in str(args.tags).split(",") if tag.strip()]
+    profile_id = repository.add_category_profile(
+        category_type=args.category_type.strip(),
+        profile_text=args.text.strip(),
+        tags=tags,
+        weight=args.weight,
+        synthetic_count=args.synthetic_count,
+    )
+    print(f"category_profile_added: id={profile_id}, type={args.category_type.strip()}")
+
+
+def handle_list_category_profiles(args: argparse.Namespace) -> None:
+    repository = build_repository(args.db, load_runtime_config(args))
+    repository.initialize_database()
+    rows = repository.list_category_profiles(include_inactive=args.include_inactive)
+    if not rows:
+        print("No category profiles.")
+        return
+    print(f"training_signature: {repository.get_category_profile_training_signature()}")
+    for row in rows:
+        print(
+            f"- id={row['id']} type={row['type']} status={row['status']} "
+            f"weight={row['weight']} synthetic_count={row['synthetic_count']}"
+        )
+
+
+def handle_deactivate_category_profile(args: argparse.Namespace) -> None:
+    repository = build_repository(args.db, load_runtime_config(args))
+    repository.initialize_database()
+    updated = repository.deactivate_category_profile(args.profile_id)
+    print(f"category_profile_deactivated: {updated}")
+
+
+def handle_debug_training_sources(args: argparse.Namespace) -> None:
+    config = load_runtime_config(args)
     repository = build_repository(args.db, config)
     repository.initialize_database()
+    rows = repository.fetch_type_training_examples()
+    active_profiles = repository.list_category_profiles(include_inactive=False)
+    stats = repository.get_stats()
+    reviewed_feedback_count = repository.count_reviewed_feedback_logs()
+    synthetic_rows = [row for row in rows if row.get("source") == "category_profile"]
+    type_counts: dict[str, int] = {}
+    source_weights: dict[str, list[float]] = {}
+    for row in rows:
+        label = str(row.get("label") or "unknown")
+        source = str(row.get("source") or "real")
+        type_counts[label] = type_counts.get(label, 0) + 1
+        source_weights.setdefault(source, []).append(float(row.get("sample_weight", 1.0) or 1.0))
+
+    labels = {str(row.get("label") or "") for row in rows if str(row.get("label") or "").strip()}
+    learnable = True
+    reasons: list[str] = []
+    if len(rows) < config.ml.min_training_examples:
+        learnable = False
+        reasons.append(f"training rows below minimum ({len(rows)} < {config.ml.min_training_examples})")
+    if len(labels) < 2:
+        learnable = False
+        reasons.append(f"need at least 2 labels, found {len(labels)}")
+    try:
+        import scipy  # noqa: F401
+        import sklearn  # noqa: F401
+    except Exception as error:
+        learnable = False
+        reasons.append(f"sklearn/scipy unavailable: {error}")
+
+    print("Training source diagnostics")
+    print(f"- confirmed_examples: {stats['confirmed_examples_count']}")
+    print(f"- reviewed_feedback_logs: {reviewed_feedback_count}")
+    print(f"- active_category_profiles: {len(active_profiles)}")
+    print(f"- synthetic_rows: {len(synthetic_rows)}")
+    print("- type_row_counts:")
+    if type_counts:
+        for label, count in sorted(type_counts.items()):
+            print(f"  * {label}: {count}")
+    else:
+        print("  * none: 0")
+    print("- source_sample_weight_avg:")
+    if source_weights:
+        for source, weights in sorted(source_weights.items()):
+            average = sum(weights) / max(len(weights), 1)
+            print(f"  * {source}: {average:.3f}")
+    else:
+        print("  * none: 0.000")
+    print(f"- type_classifier_learnable: {'yes' if learnable else 'no'}")
+    if not learnable:
+        print("- learnability_reasons:")
+        for reason in reasons:
+            print(f"  * {reason}")
+    print(f"- training_signature: {repository.get_category_profile_training_signature()}")
+    print("- active_profiles:")
+    if not active_profiles:
+        print("  * none")
+    for profile in active_profiles:
+        print(
+            f"  * id={profile['id']} type={profile['type']} "
+            f"weight={profile['weight']} synthetic_count={profile['synthetic_count']}"
+        )
+
+
+def handle_preview_move(args: argparse.Namespace) -> None:
     config = load_runtime_config(args)
+    repository = build_repository(args.db, config)
+    repository.initialize_database()
     plan = preview_move_plan(repository=repository, config=config, limit=args.limit)
     print(f"batch_id: {plan['batch_id']}")
     print(f"manifest: {plan['manifest_path']}")
