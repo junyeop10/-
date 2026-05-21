@@ -219,11 +219,12 @@ class SentenceTransformerEmbedder:
                 text_kind,
             ]
         )
-        storage_id = (
-            self.embedding_repository.build_storage_id(safe_file_hash, cache_key)
-            if self.embedding_repository is not None
-            else safe_file_hash or hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
-        )
+        if self.embedding_repository is not None and text_kind == "compressed_query":
+            storage_id = f"compressed_{hashlib.sha256(cache_key.encode('utf-8')).hexdigest()}"
+        elif self.embedding_repository is not None:
+            storage_id = self.embedding_repository.build_storage_id(safe_file_hash, cache_key)
+        else:
+            storage_id = safe_file_hash or hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
         return {
             "cache_key": cache_key,
             "file_hash": safe_file_hash,

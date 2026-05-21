@@ -52,10 +52,36 @@ class EmbeddingStoreConfig:
     enabled: bool = True
     backend: str = "hdf5"
     path: str = "data/embeddings.h5"
+    model_version: str = "2.1-compressed"
+    use_compressed_text: bool = True
     use_legacy_sqlite_cache: bool = True
     migrate_legacy_cache_on_hit: bool = True
     dual_write_legacy_sqlite: bool = False
     lock_timeout_seconds: float = 15.0
+
+
+@dataclass
+class FeatureExtractionConfig:
+    enabled: bool = True
+    extractor_version: str = "2.2"
+    compressed_text_total_limit: int = 2600
+    layout_enabled: bool = True
+    layout_extractor_version: str = "1.0"
+
+
+@dataclass
+class MLConfig:
+    enabled: bool = True
+    type_classifier_version: str = "2.1"
+    min_training_examples: int = 4
+    filename_weight: float = 2.0
+
+
+@dataclass
+class ClusteringConfig:
+    enabled: bool = True
+    min_cluster_size: int = 3
+    max_candidates: int = 5
 
 
 @dataclass
@@ -77,6 +103,9 @@ class AppConfig:
     ocr: OCRConfig = field(default_factory=OCRConfig)
     llm: LLMProviderConfig = field(default_factory=LLMProviderConfig)
     embedding: EmbeddingStoreConfig = field(default_factory=EmbeddingStoreConfig)
+    features: FeatureExtractionConfig = field(default_factory=FeatureExtractionConfig)
+    ml: MLConfig = field(default_factory=MLConfig)
+    clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     filesystem: FileSystemConfig = field(default_factory=FileSystemConfig)
 
     def to_dict(self) -> dict[str, Any]:

@@ -7,12 +7,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.confidence import ConfidencePolicy
+from src.document_features import DocumentFeatureBundle, DocumentFeatureExtractor
 from src.feedback import build_rule_suggestions
 from src.models import ClassificationExplanation, HierarchyPrediction
 from src.performance import build_file_latency_analysis, normalize_stage_timings
 from src.rule_classifier import RuleBasedClassifier, build_rule_input_text
 from src.storage import ClassificationRepository
 from src.taxonomy import Taxonomy, UNCATEGORIZED
+from src.type_classifier import TypeClassifier
 from src.vectorizer import SentenceTransformerEmbedder
 
 
@@ -50,6 +53,13 @@ class ClassificationResult:
     llm_used: bool = False
     ocr_used: bool = False
     processing_profile: dict[str, Any] = field(default_factory=dict)
+    predicted_type: str = ""
+    type_confidence: float = 0.0
+    review_reasons: list[str] = field(default_factory=list)
+    suggested_tags: list[dict[str, Any]] = field(default_factory=list)
+    rule_evidence: dict[str, Any] = field(default_factory=dict)
+    ml_evidence: dict[str, Any] = field(default_factory=dict)
+    cluster_candidate_id: int | None = None
 
 
 def get_primary_processing_method(result: ClassificationResult) -> str:
@@ -100,6 +110,9 @@ class HybridClassifier:
         use_embedding_for_no_rule: bool = True,
         low_rule_confidence_threshold: float = 0.20,
         review_threshold: float = 0.65,
+        feature_extractor: DocumentFeatureExtractor | None = None,
+        type_classifier: TypeClassifier | None = None,
+        confidence_policy: ConfidencePolicy | None = None,
     ) -> None:
         self.repository = repository
         self.embedder = embedder
@@ -110,6 +123,9 @@ class HybridClassifier:
         self.use_embedding_for_no_rule = use_embedding_for_no_rule
         self.low_rule_confidence_threshold = low_rule_confidence_threshold
         self.review_threshold = review_threshold
+        self.feature_extractor = feature_extractor or DocumentFeatureExtractor()
+        self.type_classifier = type_classifier or TypeClassifier()
+        self.confidence_policy = confidence_policy or ConfidencePolicy(threshold=review_threshold)
 
     def classify_file(
         self,
@@ -118,8 +134,8 @@ class HybridClassifier:
         text: str,
         duplicate_of_file_id: int | None,
         file_name: str | None = None,
+        document_features: DocumentFeatureBundle | dict[str, Any] | None = None,
     ) -> ClassificationResult:
-        del file_id
         classify_start = time.perf_counter()
         categories = self.repository.list_categories()
         if not categories:
@@ -137,6 +153,8 @@ class HybridClassifier:
             rule_breakdown=rule_breakdown,
             file_name=file_name,
             categories=categories,
+            file_id=file_id,
+            document_features=document_features,
             initial_stage_timings={
                 "normalize": normalize_time,
                 "rule": rule_time,
@@ -154,6 +172,8 @@ class HybridClassifier:
         precomputed_query_embedding: list[float] | None = None,
         precomputed_embedding_meta: dict[str, Any] | None = None,
         file_name: str | None = None,
+        file_id: int | None = None,
+        document_features: DocumentFeatureBundle | dict[str, Any] | None = None,
         initial_stage_timings: dict[str, float] | None = None,
     ) -> ClassificationResult:
         classify_start = time.perf_counter()
@@ -163,6 +183,16 @@ class HybridClassifier:
             raise ValueError("No categories are available.")
 
         normalized_text = self.rule_classifier.normalize_text(text)
+        feature_start = time.perf_counter()
+        feature_bundle = self._coerce_or_extract_features(
+            document_features=document_features,
+            file_name=file_name or "",
+            text=normalized_text,
+            file_hash=file_hash,
+        )
+        if file_id is not None:
+            self._persist_features(file_id=file_id, file_hash=file_hash, feature_bundle=feature_bundle)
+        feature_time = time.perf_counter() - feature_start
         rule_scores = self._normalize_scores(rule_breakdown["scores"], categories)
         top_rule_category = self._pick_top_category(rule_scores, categories)
         top_rule_score = rule_scores.get(top_rule_category, 0.0)
@@ -191,14 +221,15 @@ class HybridClassifier:
             else:
                 if isinstance(self.embedder, SentenceTransformerEmbedder):
                     query_embedding = self.embedder.encode(
-                        normalized_text,
+                        feature_bundle.compressed_text,
                         repository=self.repository,
                         file_hash=file_hash,
-                        text_kind="query",
+                        text_kind="compressed_query",
+                        embedding_version="2.1-compressed",
                     )
                     embedding_meta = self.embedder.get_last_encode_meta()
                 else:
-                    query_embedding = self.embedder.encode(normalized_text)
+                    query_embedding = self.embedder.encode(feature_bundle.compressed_text)
                     embedding_meta = {"cache_hit": None, "elapsed": 0.0, "model_name": "custom"}
             embedding_time = time.perf_counter() - embedding_start
             embedding_breakdown = self.embedder.score_against_examples(
@@ -206,6 +237,14 @@ class HybridClassifier:
                 examples=confirmed_examples,
                 categories=categories,
             )
+            if file_id is not None and query_embedding:
+                self.repository.upsert_document_vector(
+                    file_id=file_id,
+                    vector_type="compressed_embedding",
+                    vector_key=str(embedding_meta.get("cache_key", "")),
+                    vector_json="",
+                    model_version=str(embedding_meta.get("model_name", "embedding")),
+                )
 
         embedding_scores = embedding_breakdown["scores"]
         adjustment_start = time.perf_counter()
@@ -238,8 +277,49 @@ class HybridClassifier:
             predicted_category = self._pick_top_category(candidate_scores, categories)
 
         confidence = max(candidate_scores.get(predicted_category, 0.0), rule_scores.get(predicted_category, 0.0))
-        review_required = self._needs_review(candidate_scores, confidence, top_rule_category, embedding_scores)
+        type_prediction = self.type_classifier.predict(
+            training_rows=self.repository.fetch_type_training_examples(),
+            file_name=file_name or "",
+            body_text=feature_bundle.compressed_text,
+            structural_features={
+                **feature_bundle.structural_features,
+                **feature_bundle.text_stats,
+                **{f"layout_{key}": value for key, value in feature_bundle.layout_features.items()},
+            },
+            fallback_type=predicted_category,
+        )
+        if type_prediction.available:
+            self.repository.insert_model_run(
+                model_name="type_classifier",
+                model_version=self.type_classifier.version,
+                training_count=int(type_prediction.evidence.get("training_count", 0)),
+                metrics=type_prediction.evidence,
+            )
+        top_embedding_category = self._pick_top_category(embedding_scores, categories)
+        embedding_available = max(embedding_scores.values(), default=0.0) > 0
+        confidence_decision = self.confidence_policy.evaluate(
+            confidence=type_prediction.confidence if type_prediction.available else confidence,
+            candidate_scores=type_prediction.candidate_scores if type_prediction.available else candidate_scores,
+            rule_prediction=top_rule_category,
+            ml_prediction=type_prediction.predicted_type,
+            ml_available=type_prediction.available,
+            embedding_prediction=top_embedding_category,
+            embedding_available=embedding_available,
+        )
+        legacy_review_required = self._needs_review(candidate_scores, confidence, top_rule_category, embedding_scores)
+        review_required = legacy_review_required or confidence_decision.review_required
+        review_reasons = list(confidence_decision.review_reasons)
+        if legacy_review_required and "legacy_ambiguity" not in review_reasons:
+            review_reasons.append("legacy_ambiguity")
+        layout_review_reason = self._layout_conflict_reason(
+            predicted_type=type_prediction.predicted_type,
+            layout_features=feature_bundle.layout_features,
+        )
+        if type_prediction.available and layout_review_reason and layout_review_reason not in review_reasons:
+            review_reasons.append(layout_review_reason)
+            review_required = True
         hierarchy = self._resolve_hierarchy(predicted_category, confidence)
+        suggested_tags = self._suggest_tags(feature_bundle, predicted_type=type_prediction.predicted_type)
         explanation_start = time.perf_counter()
         explanation_obj = self._build_explanation(
             predicted_category=predicted_category,
@@ -260,6 +340,7 @@ class HybridClassifier:
         stage_timings.update(
             {
                 "confirmed_example_lookup": example_lookup_time,
+                "feature_extraction": feature_time,
                 "embedding": embedding_time,
                 "adjustments": adjustment_time,
                 "combine": combine_time,
@@ -323,10 +404,21 @@ class HybridClassifier:
             classifier_contributions=explanation_obj.classifier_contributions,
             explanation=explanation_obj.to_dict(),
             processing_profile=processing_profile,
+            predicted_type=type_prediction.predicted_type,
+            type_confidence=type_prediction.confidence,
+            review_reasons=review_reasons,
+            suggested_tags=suggested_tags,
+            rule_evidence={
+                "prediction": top_rule_category,
+                "score": top_rule_score,
+                "matches": rule_breakdown["matches"].get(top_rule_category, []),
+                "scores": rule_scores,
+            },
+            ml_evidence=type_prediction.evidence | {"candidate_scores": type_prediction.candidate_scores},
         )
 
     def persist_classification(self, file_id: int, result: ClassificationResult) -> int:
-        return self.repository.insert_classification(
+        classification_id = self.repository.insert_classification(
             file_id=file_id,
             predicted_category=result.predicted_category,
             rule_score=result.rule_score,
@@ -356,10 +448,136 @@ class HybridClassifier:
             performance_json=json.dumps(result.processing_profile, ensure_ascii=False),
             classifier_version=CLASSIFIER_VERSION,
             config_version=CLASSIFIER_VERSION,
+            predicted_type=result.predicted_type,
+            type_confidence=result.type_confidence,
+            review_reasons_json=json.dumps(result.review_reasons, ensure_ascii=False),
+            suggested_tags_json=json.dumps(result.suggested_tags, ensure_ascii=False),
+            cluster_candidate_id=result.cluster_candidate_id,
+            ml_evidence_json=json.dumps(result.ml_evidence, ensure_ascii=False),
+            rule_evidence_json=json.dumps(result.rule_evidence, ensure_ascii=False),
         )
+        for item in result.suggested_tags:
+            tag = str(item.get("tag", "")).strip()
+            if not tag or tag.startswith("type:"):
+                continue
+            self.repository.upsert_document_tag(
+                file_id=file_id,
+                tag=tag,
+                confidence=float(item.get("confidence", 0.0)),
+                source=str(item.get("source", "classifier")),
+            )
+        return classification_id
 
     def suggest_rules(self, min_occurrences: int = 2) -> list[dict[str, Any]]:
         return build_rule_suggestions(self.repository, min_occurrences=min_occurrences)
+
+    def _coerce_or_extract_features(
+        self,
+        *,
+        document_features: DocumentFeatureBundle | dict[str, Any] | None,
+        file_name: str,
+        text: str,
+        file_hash: str = "",
+    ) -> DocumentFeatureBundle:
+        if isinstance(document_features, DocumentFeatureBundle):
+            return document_features
+        if isinstance(document_features, dict) and "compressed_text" in document_features:
+                return DocumentFeatureBundle(
+                    feature_version=str(document_features.get("feature_version") or self.feature_extractor.version),
+                    filename_features=dict(document_features.get("filename_features") or {}),
+                    metadata_features=dict(document_features.get("metadata_features") or {}),
+                    structural_features=dict(document_features.get("structural_features") or {}),
+                    layout_features=dict(document_features.get("layout_features") or {}),
+                    text_stats=dict(document_features.get("text_stats") or {}),
+                    compressed_text=str(document_features.get("compressed_text") or text),
+                compressed_text_hash=str(document_features.get("compressed_text_hash") or ""),
+            )
+        if file_hash:
+            cached = self.repository.get_document_features_by_hash(file_hash, self.feature_extractor.version)
+            if cached is not None:
+                return DocumentFeatureBundle(
+                    feature_version=str(cached["extractor_version"]),
+                    filename_features=json.loads(str(cached["filename_features_json"])),
+                    metadata_features=json.loads(str(cached["metadata_features_json"])),
+                    structural_features=json.loads(str(cached["structural_features_json"])),
+                    layout_features=json.loads(str(cached["layout_features_json"])),
+                    text_stats=json.loads(str(cached["text_stats_json"])),
+                    compressed_text=str(cached["compressed_text"]),
+                    compressed_text_hash=str(cached["compressed_text_hash"]),
+                )
+        return self.feature_extractor.extract(
+            file_name=file_name,
+            file_ext=f".{file_name.rsplit('.', 1)[-1].lower()}" if "." in file_name else "",
+            text=text,
+        )
+
+    def _persist_features(self, *, file_id: int, file_hash: str, feature_bundle: DocumentFeatureBundle) -> None:
+        try:
+            self.repository.upsert_document_features(
+                file_id=file_id,
+                file_hash=file_hash,
+                extractor_version=feature_bundle.feature_version,
+                filename_features=feature_bundle.filename_features,
+                metadata_features=feature_bundle.metadata_features,
+            structural_features=feature_bundle.structural_features,
+            layout_features=feature_bundle.layout_features,
+            text_stats=feature_bundle.text_stats,
+                compressed_text=feature_bundle.compressed_text,
+                compressed_text_hash=feature_bundle.compressed_text_hash,
+            )
+        except Exception:
+            # Some unit paths classify without first inserting a files row.
+            return
+
+    def _suggest_tags(self, feature_bundle: DocumentFeatureBundle, *, predicted_type: str) -> list[dict[str, Any]]:
+        tags: list[dict[str, Any]] = []
+        text = " ".join(
+            [
+                str(feature_bundle.filename_features.get("normalized_stem", "")),
+                feature_bundle.compressed_text,
+            ]
+        ).lower()
+        tag_rules = {
+            "AI": ("ai", "인공지능", "machine learning", "deep learning", "transformer"),
+            "의료": ("medical", "mri", "의료", "병원", "진단"),
+            "컴퓨터비전": ("vision", "image", "segmentation", "detection", "컴퓨터비전"),
+            "수업자료": ("수업", "강의", "lecture", "캡스톤", "과제"),
+        }
+        for tag, keywords in tag_rules.items():
+            if any(keyword in text for keyword in keywords):
+                tags.append({"tag": tag, "confidence": 0.75, "source": "feature_rule"})
+        if predicted_type:
+            tags.append({"tag": f"type:{predicted_type}", "confidence": 0.5, "source": "type_hint"})
+        layout_scores = {
+            "영수증형": feature_bundle.layout_features.get("receipt_pattern_score", 0.0),
+            "증명서형": feature_bundle.layout_features.get("certificate_pattern_score", 0.0),
+            "발표자료형": feature_bundle.layout_features.get("slide_like_layout_score", 0.0),
+            "논문형": feature_bundle.layout_features.get("dense_text_score", 0.0),
+        }
+        for tag, score in layout_scores.items():
+            try:
+                value = float(score)
+            except (TypeError, ValueError):
+                continue
+            if value >= 0.65:
+                tags.append({"tag": tag, "confidence": round(value, 4), "source": "layout"})
+        return tags[:8]
+
+    def _layout_conflict_reason(self, *, predicted_type: str, layout_features: dict[str, Any]) -> str:
+        if not predicted_type:
+            return ""
+        layout_scores = {
+            "영수증": float(layout_features.get("receipt_pattern_score", 0.0) or 0.0),
+            "증명서": float(layout_features.get("certificate_pattern_score", 0.0) or 0.0),
+            "발표자료": float(layout_features.get("slide_like_layout_score", 0.0) or 0.0),
+            "논문": float(layout_features.get("dense_text_score", 0.0) or 0.0),
+        }
+        top_layout_type, top_score = max(layout_scores.items(), key=lambda item: item[1])
+        if top_score < 0.75:
+            return ""
+        if top_layout_type not in predicted_type:
+            return f"layout_{top_layout_type}_conflict"
+        return ""
 
     def _build_candidate_scores(
         self,

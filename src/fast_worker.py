@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from src.document_features import DocumentFeatureExtractor
 from src.file_reader import extract_text_from_file
 from src.hash_utils import compute_xxhash64
 from src.rule_classifier import build_rule_input_text, score_text_with_rules
@@ -28,6 +29,16 @@ def process_file_fast(file_path_text: str, rules: list[dict[str, Any]]) -> dict[
         normalized_text = normalize_text(evidence_text)
         timings["preprocess_time"] = time.perf_counter() - clean_start
 
+        feature_start = time.perf_counter()
+        document_features = DocumentFeatureExtractor().extract(
+            file_name=file_path.name,
+            file_ext=file_path.suffix.lower(),
+            text=normalized_text,
+            file_size=file_path.stat().st_size,
+            file_path=file_path,
+        )
+        timings["feature_time"] = time.perf_counter() - feature_start
+
         rule_start = time.perf_counter()
         rule_input_text = build_rule_input_text(normalized_text, file_path.name)
         rule_breakdown = score_text_with_rules(rule_input_text, rules)
@@ -42,6 +53,7 @@ def process_file_fast(file_path_text: str, rules: list[dict[str, Any]]) -> dict[
             "file_size": file_path.stat().st_size,
             "xxhash64": file_hash,
             "evidence_text": normalized_text,
+            "document_features": document_features.to_storage_dict(),
             "rule_breakdown": rule_breakdown,
             "ocr_used": False,
             "ocr_pages": 0,
@@ -62,6 +74,7 @@ def process_file_fast(file_path_text: str, rules: list[dict[str, Any]]) -> dict[
             "file_size": file_path.stat().st_size if file_path.exists() else 0,
             "xxhash64": "",
             "evidence_text": "",
+            "document_features": {},
             "rule_breakdown": {"scores": {}, "matches": {}},
             "ocr_used": False,
             "ocr_pages": 0,

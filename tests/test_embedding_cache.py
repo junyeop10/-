@@ -130,6 +130,21 @@ class EmbeddingCacheTest(unittest.TestCase):
         second_meta = embedder.get_last_encode_meta()
         self.assertTrue(second_meta["cache_hit"])
 
+    def test_compressed_text_kind_uses_distinct_cache_entry(self) -> None:
+        model = _FakeModel(marker=1.0)
+        embedder = _TestEmbedder("model-a", model)
+        regular = embedder.encode("full body text", repository=self.repository, file_hash="hash-f", text_kind="query")
+        compressed = embedder.encode(
+            "filename title summary",
+            repository=self.repository,
+            file_hash="hash-f",
+            text_kind="compressed_query",
+            embedding_version="2.1-compressed",
+        )
+
+        self.assertNotEqual(regular, compressed)
+        self.assertEqual(model.calls, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

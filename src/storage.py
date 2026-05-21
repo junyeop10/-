@@ -8,6 +8,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from src.category_profiles import (
+    DEFAULT_CATEGORY_PROFILES,
+    build_category_profile_signature,
+    build_synthetic_training_rows,
+)
 from src.embedding_repository import EmbeddingRepository
 
 
@@ -223,6 +228,79 @@ class ClassificationRepository:
                 payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS document_features (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                file_hash TEXT NOT NULL,
+                extractor_version TEXT NOT NULL,
+                filename_features_json TEXT NOT NULL DEFAULT '{}',
+                metadata_features_json TEXT NOT NULL DEFAULT '{}',
+                structural_features_json TEXT NOT NULL DEFAULT '{}',
+                layout_features_json TEXT NOT NULL DEFAULT '{}',
+                text_stats_json TEXT NOT NULL DEFAULT '{}',
+                compressed_text TEXT NOT NULL DEFAULT '',
+                compressed_text_hash TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(file_id, extractor_version),
+                FOREIGN KEY (file_id) REFERENCES files(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS document_vectors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                vector_type TEXT NOT NULL,
+                vector_key TEXT NOT NULL DEFAULT '',
+                vector_json TEXT NOT NULL DEFAULT '',
+                model_version TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(file_id, vector_type, model_version),
+                FOREIGN KEY (file_id) REFERENCES files(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS model_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_name TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                trained_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                training_count INTEGER NOT NULL DEFAULT 0,
+                metrics_json TEXT NOT NULL DEFAULT '{}'
+            );
+
+            CREATE TABLE IF NOT EXISTS category_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                suggested_name TEXT NOT NULL,
+                representative_file_ids_json TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS document_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(file_id, tag, source),
+                FOREIGN KEY (file_id) REFERENCES files(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS category_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                profile_text TEXT NOT NULL,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                weight REAL NOT NULL DEFAULT 0.5,
+                synthetic_count INTEGER NOT NULL DEFAULT 5,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
 
@@ -238,6 +316,14 @@ class ClassificationRepository:
         self._ensure_column(connection, "classifications", "performance_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column(connection, "classifications", "classifier_version", "TEXT NOT NULL DEFAULT '2.0'")
         self._ensure_column(connection, "classifications", "config_version", "TEXT NOT NULL DEFAULT '2.0'")
+        self._ensure_column(connection, "classifications", "predicted_type", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(connection, "classifications", "type_confidence", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "classifications", "review_reasons_json", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column(connection, "classifications", "suggested_tags_json", "TEXT NOT NULL DEFAULT '[]'")
+        self._ensure_column(connection, "classifications", "cluster_candidate_id", "INTEGER")
+        self._ensure_column(connection, "classifications", "ml_evidence_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column(connection, "classifications", "rule_evidence_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column(connection, "document_features", "layout_features_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column(connection, "rules", "rule_scope", "TEXT NOT NULL DEFAULT 'content'")
         self._ensure_column(connection, "rules", "negative_weight", "REAL NOT NULL DEFAULT 0")
 
@@ -285,6 +371,94 @@ class ClassificationRepository:
                         """,
                         (category, keyword),
                     )
+
+    def seed_default_category_profiles(self) -> int:
+        inserted = 0
+        with self.connect() as connection:
+            for profile in DEFAULT_CATEGORY_PROFILES:
+                existing = connection.execute(
+                    "SELECT id FROM category_profiles WHERE type = ? LIMIT 1",
+                    (str(profile["type"]),),
+                ).fetchone()
+                if existing:
+                    continue
+                connection.execute(
+                    """
+                    INSERT INTO category_profiles (
+                        type, profile_text, tags_json, weight, synthetic_count, status
+                    ) VALUES (?, ?, ?, 0.5, 5, 'active')
+                    """,
+                    (
+                        str(profile["type"]),
+                        str(profile["profile_text"]),
+                        json.dumps(profile.get("tags", []), ensure_ascii=False),
+                    ),
+                )
+                inserted += 1
+        return inserted
+
+    def add_category_profile(
+        self,
+        *,
+        category_type: str,
+        profile_text: str,
+        tags: list[str] | None = None,
+        weight: float = 0.5,
+        synthetic_count: int = 5,
+        status: str = "active",
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO category_profiles (
+                    type, profile_text, tags_json, weight, synthetic_count, status
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    category_type,
+                    profile_text,
+                    json.dumps(tags or [], ensure_ascii=False),
+                    float(weight),
+                    int(synthetic_count),
+                    status,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_category_profiles(self, include_inactive: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT * FROM category_profiles"
+        if not include_inactive:
+            query += " WHERE status = 'active'"
+        query += " ORDER BY type, id"
+        with self.connect() as connection:
+            rows = connection.execute(query).fetchall()
+        return [dict(row) for row in rows]
+
+    def deactivate_category_profile(self, profile_id: int) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE category_profiles
+                SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (profile_id,),
+            )
+            return int(cursor.rowcount)
+
+    def get_category_profile_training_signature(self) -> str:
+        return build_category_profile_signature(self.list_category_profiles(include_inactive=False))
+
+    def count_reviewed_feedback_logs(self) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM feedback_logs
+                WHERE feedback_action IN ('confirmed', 'corrected')
+                """
+            ).fetchone()
+        return int(row["count"]) if row else 0
 
     def upsert_file(
         self,
@@ -354,6 +528,206 @@ class ClassificationRepository:
             ).fetchone()
         return int(row["id"]) if row else None
 
+    def get_document_features_by_hash(self, file_hash: str, extractor_version: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                """
+                SELECT *
+                FROM document_features
+                WHERE file_hash = ? AND extractor_version = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (file_hash, extractor_version),
+            ).fetchone()
+
+    def upsert_document_features(
+        self,
+        *,
+        file_id: int,
+        file_hash: str,
+        extractor_version: str,
+        filename_features: dict[str, Any],
+        metadata_features: dict[str, Any],
+        structural_features: dict[str, Any],
+        text_stats: dict[str, Any],
+        compressed_text: str,
+        compressed_text_hash: str,
+        layout_features: dict[str, Any] | None = None,
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO document_features (
+                    file_id, file_hash, extractor_version,
+                    filename_features_json, metadata_features_json, structural_features_json,
+                    layout_features_json, text_stats_json, compressed_text, compressed_text_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(file_id, extractor_version) DO UPDATE SET
+                    file_hash = excluded.file_hash,
+                    filename_features_json = excluded.filename_features_json,
+                    metadata_features_json = excluded.metadata_features_json,
+                    structural_features_json = excluded.structural_features_json,
+                    layout_features_json = excluded.layout_features_json,
+                    text_stats_json = excluded.text_stats_json,
+                    compressed_text = excluded.compressed_text,
+                    compressed_text_hash = excluded.compressed_text_hash,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    file_id,
+                    file_hash,
+                    extractor_version,
+                    json.dumps(filename_features, ensure_ascii=False),
+                    json.dumps(metadata_features, ensure_ascii=False),
+                    json.dumps(structural_features, ensure_ascii=False),
+                    json.dumps(layout_features or {}, ensure_ascii=False),
+                    json.dumps(text_stats, ensure_ascii=False),
+                    compressed_text,
+                    compressed_text_hash,
+                ),
+            )
+            if cursor.lastrowid:
+                return int(cursor.lastrowid)
+            row = connection.execute(
+                "SELECT id FROM document_features WHERE file_id = ? AND extractor_version = ?",
+                (file_id, extractor_version),
+            ).fetchone()
+            return int(row["id"]) if row else 0
+
+    def fetch_type_training_examples(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    fl.final_middle_category AS label,
+                    f.file_name,
+                    f.extracted_text AS body_text,
+                    COALESCE(df.structural_features_json, '{}') AS structural_features_json
+                    , COALESCE(df.layout_features_json, '{}') AS layout_features_json
+                FROM feedback_logs fl
+                JOIN files f ON f.id = fl.file_id
+                LEFT JOIN document_features df ON df.file_id = f.id
+                WHERE fl.feedback_action IN ('confirmed', 'corrected')
+
+                UNION ALL
+
+                SELECT
+                    ce.category AS label,
+                    f.file_name,
+                    COALESCE(NULLIF(ce.source_text, ''), f.extracted_text) AS body_text,
+                    COALESCE(df.structural_features_json, '{}') AS structural_features_json
+                    , COALESCE(df.layout_features_json, '{}') AS layout_features_json
+                FROM confirmed_examples ce
+                JOIN files f ON f.id = ce.file_id
+                LEFT JOIN document_features df ON df.file_id = f.id
+                ORDER BY file_name
+                """
+            ).fetchall()
+        training_rows = [dict(row) | {"source": "real", "sample_weight": 1.0} for row in rows]
+        active_profiles = self.list_category_profiles(include_inactive=False)
+        for profile in active_profiles:
+            training_rows.extend(build_synthetic_training_rows(profile))
+        return training_rows
+
+    def upsert_document_vector(
+        self,
+        *,
+        file_id: int,
+        vector_type: str,
+        vector_key: str,
+        vector_json: str,
+        model_version: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO document_vectors (file_id, vector_type, vector_key, vector_json, model_version)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(file_id, vector_type, model_version) DO UPDATE SET
+                    vector_key = excluded.vector_key,
+                    vector_json = excluded.vector_json
+                """,
+                (file_id, vector_type, vector_key, vector_json, model_version),
+            )
+
+    def insert_model_run(self, model_name: str, model_version: str, training_count: int, metrics: dict[str, Any]) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO model_runs (model_name, model_version, training_count, metrics_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (model_name, model_version, training_count, json.dumps(metrics, ensure_ascii=False)),
+            )
+            return int(cursor.lastrowid)
+
+    def upsert_document_tag(self, file_id: int, tag: str, confidence: float, source: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO document_tags (file_id, tag, confidence, source)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(file_id, tag, source) DO UPDATE SET
+                    confidence = excluded.confidence
+                """,
+                (file_id, tag, confidence, source),
+            )
+
+    def insert_category_candidate(
+        self,
+        *,
+        source: str,
+        suggested_name: str,
+        representative_file_ids: list[int],
+        evidence: dict[str, Any],
+        status: str = "pending",
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO category_candidates (
+                    source, suggested_name, representative_file_ids_json, evidence_json, status
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    source,
+                    suggested_name,
+                    json.dumps(representative_file_ids, ensure_ascii=False),
+                    json.dumps(evidence, ensure_ascii=False),
+                    status,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def fetch_cluster_candidate_rows(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    f.id AS file_id,
+                    f.file_name,
+                    f.extracted_text AS text,
+                    c.predicted_category,
+                    c.predicted_type,
+                    c.review_reasons_json,
+                    CASE WHEN c.review_reasons_json <> '[]' THEN 1 ELSE 0 END AS review_required,
+                    df.compressed_text
+                FROM classifications c
+                JOIN (
+                    SELECT file_id, MAX(id) AS max_id
+                    FROM classifications
+                    GROUP BY file_id
+                ) latest ON latest.max_id = c.id
+                JOIN files f ON f.id = c.file_id
+                LEFT JOIN document_features df ON df.file_id = f.id
+                ORDER BY c.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def insert_classification(
         self,
         file_id: int,
@@ -377,6 +751,13 @@ class ClassificationRepository:
         performance_json: str = "{}",
         classifier_version: str = SCHEMA_VERSION,
         config_version: str = SCHEMA_VERSION,
+        predicted_type: str = "",
+        type_confidence: float = 0.0,
+        review_reasons_json: str = "[]",
+        suggested_tags_json: str = "[]",
+        cluster_candidate_id: int | None = None,
+        ml_evidence_json: str = "{}",
+        rule_evidence_json: str = "{}",
     ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
@@ -387,8 +768,10 @@ class ClassificationRepository:
                     large_category, middle_category, small_category,
                     large_confidence, middle_confidence, small_confidence,
                     source_scores_json, explanation_json, evidence_json, performance_json,
-                    classifier_version, config_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    classifier_version, config_version,
+                    predicted_type, type_confidence, review_reasons_json, suggested_tags_json,
+                    cluster_candidate_id, ml_evidence_json, rule_evidence_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_id,
@@ -412,6 +795,13 @@ class ClassificationRepository:
                     performance_json,
                     classifier_version,
                     config_version,
+                    predicted_type,
+                    type_confidence,
+                    review_reasons_json,
+                    suggested_tags_json,
+                    cluster_candidate_id,
+                    ml_evidence_json,
+                    rule_evidence_json,
                 ),
             )
             return int(cursor.lastrowid)
@@ -872,6 +1262,11 @@ class ClassificationRepository:
                 c.large_category,
                 c.middle_category,
                 c.small_category,
+                c.predicted_type,
+                c.type_confidence,
+                c.review_reasons_json,
+                c.suggested_tags_json,
+                c.cluster_candidate_id,
                 f.file_path,
                 f.file_name,
                 f.xxhash64,
@@ -1332,6 +1727,10 @@ class ClassificationRepository:
             snapshots_count = connection.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
             adaptive_rules_count = connection.execute("SELECT COUNT(*) FROM adaptive_rule_boosts").fetchone()[0]
             embedding_cache_count = connection.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0]
+            document_features_count = connection.execute("SELECT COUNT(*) FROM document_features").fetchone()[0]
+            category_candidates_count = connection.execute("SELECT COUNT(*) FROM category_candidates").fetchone()[0]
+            document_tags_count = connection.execute("SELECT COUNT(*) FROM document_tags").fetchone()[0]
+            category_profiles_count = connection.execute("SELECT COUNT(*) FROM category_profiles").fetchone()[0]
             recent_feedback = connection.execute(
                 """
                 SELECT fl.created_at, f.file_name, fl.predicted_category, fl.final_category, fl.feedback_action
@@ -1353,6 +1752,10 @@ class ClassificationRepository:
             "snapshots_count": int(snapshots_count),
             "adaptive_rules_count": int(adaptive_rules_count),
             "embedding_cache_count": int(embedding_cache_count),
+            "document_features_count": int(document_features_count),
+            "category_candidates_count": int(category_candidates_count),
+            "document_tags_count": int(document_tags_count),
+            "category_profiles_count": int(category_profiles_count),
             "recent_feedback": [dict(row) for row in recent_feedback],
         }
 

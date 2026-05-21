@@ -35,10 +35,30 @@
     "enabled": true,
     "backend": "hdf5",
     "path": "data/embeddings.h5",
+    "model_version": "2.1-compressed",
+    "use_compressed_text": true,
     "use_legacy_sqlite_cache": true,
     "migrate_legacy_cache_on_hit": true,
     "dual_write_legacy_sqlite": false,
     "lock_timeout_seconds": 15.0
+  },
+  "features": {
+    "enabled": true,
+    "extractor_version": "2.2",
+    "compressed_text_total_limit": 2600,
+    "layout_enabled": true,
+    "layout_extractor_version": "1.0"
+  },
+  "ml": {
+    "enabled": true,
+    "type_classifier_version": "2.1",
+    "min_training_examples": 4,
+    "filename_weight": 2.0
+  },
+  "clustering": {
+    "enabled": true,
+    "min_cluster_size": 3,
+    "max_candidates": 5
   },
   "filesystem": {
     "managed_root": "organized_files",
