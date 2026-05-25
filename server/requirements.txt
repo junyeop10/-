@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+anthropic
+xxhash
+sentence-transformers
+hdbscan
+python-levenshtein
+pymupdf
+python-docx
+openpyxl
+python-pptx
+numpy
