@@ -5,9 +5,10 @@ import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
+from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from db import cache
@@ -266,9 +267,30 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     )
 
 
-@app.post("/upload")
+@app.post(
+    "/upload",
+    openapi_extra={
+        "requestBody": {
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["files"],
+                        "properties": {
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string", "format": "binary"},
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    },
+)
 async def upload(
-    background_tasks: BackgroundTasks, files: list[UploadFile]
+    background_tasks: BackgroundTasks,
+    files: Annotated[list[UploadFile], File()],
 ):
     job_id = str(uuid.uuid4())
     job_dir = UPLOAD_DIR / job_id
@@ -313,21 +335,44 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
 async def confirm(job_id: str, body: dict):
     corrections = body.get("corrections", [])
     job_data = _job_results.get(job_id, {})
+    if not job_data:
+        return {
+            "saved": 0,
+            "details": [],
+            "available_filenames": [],
+            "hint": "job_id를 찾을 수 없습니다. 서버 재시작 후에는 /upload부터 다시 하세요.",
+        }
+
     results_by_name = {
         r.filename: r for r in job_data.get("results", [])
     }
+    review_names = [r.get("filename") for r in job_data.get("review_queue", [])]
 
     saved = 0
+    details: list[dict] = []
     for correction in corrections:
         filename = correction.get("filename", "")
         user_cat_str = correction.get("user_category", "")
         result = results_by_name.get(filename)
         if not result:
+            hint = (
+                "검토 큐에만 있습니다. 분류가 완료된 파일만 confirm 가능합니다."
+                if filename in review_names
+                else "results에 없는 파일명입니다. GET /result 의 filename과 정확히 일치해야 합니다."
+            )
+            details.append({"filename": filename, "status": "skipped", "reason": hint})
             continue
 
         try:
             user_category = Category(user_cat_str)
         except ValueError:
+            details.append(
+                {
+                    "filename": filename,
+                    "status": "skipped",
+                    "reason": f"잘못된 user_category: {user_cat_str}",
+                }
+            )
             continue
 
         system_category = result.category
@@ -350,8 +395,13 @@ async def confirm(job_id: str, body: dict):
             stage6_feedback.finalize_document(result)
 
         saved += 1
+        details.append({"filename": filename, "status": "saved"})
 
-    return {"saved": saved}
+    return {
+        "saved": saved,
+        "details": details,
+        "available_filenames": list(results_by_name.keys()),
+    }
 
 
 @app.get("/result/{job_id}")

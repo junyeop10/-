@@ -8,7 +8,7 @@ import numpy as np
 from dotenv import load_dotenv
 
 from models.schemas import Category, ClassifyResult, EvidencePackage
-from pipeline.stage1_evidence import BASE_KEYWORDS
+from config.loader import BASE_KEYWORDS
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 

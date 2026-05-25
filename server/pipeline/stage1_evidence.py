@@ -1,17 +1,7 @@
 import re
 
+from config.loader import BASE_KEYWORDS
 from models.schemas import EvidencePackage
-
-BASE_KEYWORDS = {
-    "최종본": ["최종", "final", "확정", "complete"],
-    "발표자료": ["발표", "presentation", "슬라이드", "ppt"],
-    "보고서": ["보고서", "report", "분석", "결과"],
-    "데이터": ["데이터", "data", "통계", "수치"],
-    "참고자료": ["참고", "reference", "논문", "조사"],
-    "작업중": ["draft", "임시", "temp", "wip", "작업중"],
-    "공고": ["공고", "모집", "접수", "신청"],
-    "계약": ["계약", "협약", "을", "갑", "대금"],
-}
 
 _model = None
 
