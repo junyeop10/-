@@ -408,3 +408,45 @@ git merge main
 ① `main`에 직접 push 금지  
 ② `.env` 절대 commit 금지  
 ③ 작업은 **본인 `feature/` 브랜치**에서만
+
+---
+
+## 15. PR과 Gemini (코드 컨벤션 자동 리뷰)
+
+PR을 올리면 AI가 `rules/CONVENTIONS.md` 기준으로 리뷰하게 하려면 **Gemini Code Assist** GitHub 앱을 씁니다.
+
+### 15-1. 팀 리더 1회 설정
+
+1. https://github.com/marketplace/gemini-code-assist → **Install**
+2. 조직/계정 `junyeop10` 저장소 `-` 선택 → Install
+3. Google 계정으로 로그인·권한 허용
+
+### 15-2. 저장소에 이미 있는 파일 (커밋 필요)
+
+| 파일 | 역할 |
+|------|------|
+| `.gemini/styleguide.md` | 리뷰 시 지킬 컨벤션 (CONVENTIONS 요약) |
+| `.gemini/config.yaml` | 리뷰 on/off, 무시할 경로 (`.env`, `uploads/` 등) |
+
+`main`에 merge 된 뒤부터 새 PR에 자동 적용됩니다.
+
+### 15-3. PR에서 쓰는 법
+
+| 하고 싶은 일 | 방법 |
+|--------------|------|
+| PR 열면 자동 리뷰 | 기본 (5분 내 코멘트) |
+| 다시 리뷰 요청 | PR 댓글에 `/gemini review` |
+| 요약만 | `/gemini summary` |
+| 질문 | `@gemini-code-assist 이 부분 왜 그래요?` |
+
+제안된 코드는 GitHub에서 **Commit suggestion** 으로 반영 가능 (초보자는 리뷰어랑 상의 후 적용).
+
+### 15-4. PR 올리기 전 (로컬, 선택)
+
+Cursor에서 Gemini 모델 선택 → `rules/CONVENTIONS.md` 첨부 후 “이 diff 컨벤션 맞는지 봐줘” (GitHub 없이 미리 검사).
+
+### 15-5. 주의
+
+- 무료 tier: PR 리뷰 **하루 약 33건** 제한 (팀 규모 참고)
+- Gemini가 **코드를 직접 고쳐 merge 하지는 않음** — 코멘트·제안만 (최종은 사람이 merge)
+- `.gemini/` 설정 변경도 PR로 올려야 반영됨
