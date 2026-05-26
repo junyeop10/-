@@ -3,52 +3,79 @@
 > AI 기반 파일 분류 시스템 | 한양대학교 ERICA 데이터처리 기업 프로젝트
 > 모든 팀원은 코드 작성 전 이 문서를 숙지할 것
 >
-> **GitHub를 처음 쓰는 팀원:** [`GITHUB_BEGINNER.md`](./GITHUB_BEGINNER.md) 먼저 읽기 (clone → 브랜치 → commit → PR)
+> **GitHub를 처음 쓰는 팀원:** `[GITHUB_BEGINNER.md](./GITHUB_BEGINNER.md)` 먼저 읽기 (clone → 브랜치 → commit → PR)
 
 ---
 
 ## 1. 브랜치 전략
 
-### 브랜치 구조
+### 중간 발표 범위 (MVP)
+
+**학습(Stage 7)·배포(Stage 8) 전까지** 구현·발표한다.
+
+
+| 포함                                                       | 제외                        |
+| -------------------------------------------------------- | ------------------------- |
+| 문서 넣기 → 추출 → OCR → 룰 → 의미·군집 → 증거 패키지 → 로컬/외부 LLM → 검토 큐 | 학습(Fine-tune/LoRA), 모델 배포 |
+
+
+### 브랜치 구조 (역할 기준)
+
 ```
 main
-└── feature/backend-server     ← 서버 담당
-└── feature/stage0-extract     ← Stage 0 텍스트 추출 담당
-└── feature/stage1-evidence    ← Stage 1 증거 패키지 담당
-└── feature/stage2-cluster     ← Stage 2 군집화 담당
-└── feature/stage3-classify    ← Stage 3 분류 담당
-└── feature/stage4-version     ← Stage 4 버전 정리 담당
-└── feature/stage6-feedback    ← Stage 6 피드백 담당
-└── feature/frontend           ← 프론트엔드 담당
-└── hotfix/...                 ← 긴급 버그 수정 시에만
+├── feature/backend-server      ← 서버 통합 (main.py 파이프라인 연결만)
+├── feature/frontend-upload     ← 김준엽: 드래그앤드롭·폴더 업로드 UI
+├── feature/stage0-extract      ← 김준엽: 확장자별 텍스트 추출, 1500×3
+├── feature/ocr-fallback        ← 정건우: 추출 실패 → OCR
+├── feature/rule-classify       ← 정건우: 파일명 키워드, ppt/pptx 강제 룰
+├── feature/semantic-cluster    ← 천승원: 임베딩·ANN/cosine·HDBSCAN(≤3)·증거 패키지
+├── feature/llm-local-qwen      ← 이세연: 로컬 LLM (qwen2.5:3b)
+├── feature/llm-claude          ← 이세연: 외부 API (Claude)
+├── feature/review-ui           ← 정윤서: 검토 큐 UI·신뢰도·수정
+├── feature/stage4-version      ← 버전 정리 (사용자 협의)
+└── hotfix/...                  ← 긴급 버그만
 ```
 
+**Deprecated (새 작업 금지 · merge 후 삭제 예정)**
+
+- `feature/stage1-evidence` → `feature/semantic-cluster` 로 통합
+- `feature/stage2-cluster` → `feature/semantic-cluster`
+- `feature/stage3-classify` → `feature/rule-classify` + `feature/llm-claude` + `feature/llm-local-qwen`
+- `feature/stage6-feedback` → 검토·피드백은 `feature/review-ui` + `stage6_feedback.py` 유지
+- `feature/frontend` → `feature/frontend-upload` 로 이름 통일 권장
+
 ### 규칙
+
 - `main` 브랜치에 **직접 push 금지**
-- 작업은 반드시 본인 `feature/` 브랜치에서 진행
-- 완료 후 GitHub에서 Pull Request 생성 → 팀원 1명 이상 리뷰 후 merge
-- PR 제목 형식: `[Stage 0] 텍스트 추출기 구현` 처럼 담당 파트 명시
+- 작업은 반드시 **본인 담당 `feature/` 브랜치**에서 진행 (브랜치 먼저 생성 → 코드 작성)
+- 완료 후 GitHub Pull Request → 팀원 1명 이상 리뷰 후 merge
+- PR 제목 형식: `[OCR] PDF OCR 폴백 구현`, `[LLM Claude] EvidencePackage 분류 API` 처럼 **담당 파트 명시**
 
 ---
 
 ## 2. 커밋 메시지
 
 ### 형식
+
 ```
 <type>: <내용>
 ```
 
 ### type 종류
-| type | 사용 상황 |
-|------|-----------|
-| `feat` | 새 기능 추가 |
-| `fix` | 버그 수정 |
-| `refactor` | 동작 변화 없는 코드 개선 |
-| `docs` | 문서, 주석 수정 |
-| `test` | 테스트 코드 추가/수정 |
-| `chore` | 패키지 설치, 설정 파일 변경 |
+
+
+| type       | 사용 상황            |
+| ---------- | ---------------- |
+| `feat`     | 새 기능 추가          |
+| `fix`      | 버그 수정            |
+| `refactor` | 동작 변화 없는 코드 개선   |
+| `docs`     | 문서, 주석 수정        |
+| `test`     | 테스트 코드 추가/수정     |
+| `chore`    | 패키지 설치, 설정 파일 변경 |
+
 
 ### 예시
+
 ```bash
 git commit -m "feat: PDF 텍스트 추출 3구간 분할 로직 구현"
 git commit -m "feat: Claude API 비동기 호출 및 Semaphore 제한 추가"
@@ -59,6 +86,7 @@ git commit -m "docs: Stage 3 분류 로직 주석 보완"
 ```
 
 ### 규칙
+
 - 한국어 작성 권장
 - 50자 이내로 핵심만 작성
 - 과거형 금지 (`구현했다` ❌ → `구현` ✅)
@@ -106,21 +134,43 @@ project-root/
 ```
 
 ### 파일명 규칙
+
 - Python 파일: `snake_case.py`
 - 설정/문서 파일: `UPPER_CASE.md` 또는 `kebab-case.md`
-- 새 파이프라인 모듈 추가 시: `stage{번호}_{역할}.py` 형식 유지
+- 파이프라인 모듈: `stage{번호}_{역할}.py` 또는 역할명 (`ocr_fallback.py`, `rule_classify.py`, `stage3_llm_claude.py` 등)
+- **담당 브랜치와 1:1** 로 파일을 맞추고, 타 담당 파일은 PR에서 수정하지 않음
+
+### 파이프라인 목표 파일 (통합 시 `main.py`가 호출)
+
+
+| 단계         | 목표 파일 (신규·이전)                                      | 담당     |
+| ---------- | -------------------------------------------------- | ------ |
+| Pre-stage  | `pre_stage.py`                                     | 서버 통합  |
+| 텍스트 추출     | `stage0_extract.py`                                | 김준엽    |
+| OCR        | `ocr_fallback.py` (신규)                             | 정건우    |
+| 룰 분류       | `rule_classify.py` (신규)                            | 정건우    |
+| 의미·군집      | `semantic_cluster.py` (신규)                         | 천승원    |
+| 증거 패키지     | `semantic_cluster.py` 또는 `stage1_evidence.py` (이전) | 천승원    |
+| 로컬 LLM     | `stage5_llm_local.py` (신규)                         | 이세연    |
+| 외부 LLM     | `stage3_llm_claude.py`                             | 이세연    |
+| 분류 오케스트레이션 | `stage3_classify.py` (임시·통합용)                      | 서버 통합  |
+| 버전 정리      | `stage4_version.py`                                | 협의     |
+| 피드백 DB     | `stage6_feedback.py`                               | 정윤서·서버 |
+
 
 ---
 
 ## 4. Python 코드 스타일
 
 ### 기본 원칙
+
 - Python 3.10 이상 기준
 - 들여쓰기: **스페이스 4칸** (탭 금지)
 - 한 줄 최대 **100자**
 - 파일 인코딩: **UTF-8**
 
 ### 네이밍
+
 ```python
 # 변수, 함수: snake_case
 file_hash = compute_hash(file_bytes)
@@ -136,6 +186,7 @@ MAX_FILE_SIZE_MB = 50
 ```
 
 ### 타입 힌트 필수
+
 ```python
 # ✅ 올바른 예
 def run(file_bytes: bytes, filename: str, modified_at: float) -> dict:
@@ -145,6 +196,7 @@ def run(file_bytes, filename, modified_at):
 ```
 
 ### 파이프라인 모듈 함수 이름 통일
+
 모든 파이프라인 모듈의 메인 진입 함수는 `run()` 으로 통일한다.
 
 ```python
@@ -154,6 +206,7 @@ def run(...) -> dict:
 ```
 
 ### 예외 처리 필수
+
 파이프라인 함수 내에서 예외가 발생해도 서버가 죽으면 안 된다.
 반드시 `try/except` 로 감싸고 검토 큐로 보낼 것.
 
@@ -173,16 +226,19 @@ def run(file_bytes: bytes, filename: str, ext: str) -> dict:
 ```
 
 ### 반환 status 값 통일
+
 파이프라인 함수의 반환 딕셔너리에서 `status` 값은 아래로 통일한다.
 
-| status | 의미 |
-|--------|------|
-| `"ok"` | 정상 처리 완료 |
-| `"success"` | 텍스트 추출 성공 (Stage 0) |
-| `"ocr_fallback"` | OCR 폴백으로 성공 (Stage 0) |
-| `"cached"` | xxhash 캐시 히트 (Pre-stage) |
-| `"failed"` | 처리 실패 → 검토 큐 이동 |
-| `"review_queue"` | 유효성 검사 실패 → 검토 큐 이동 |
+
+| status           | 의미                       |
+| ---------------- | ------------------------ |
+| `"ok"`           | 정상 처리 완료                 |
+| `"success"`      | 텍스트 추출 성공 (Stage 0)      |
+| `"ocr_fallback"` | OCR 폴백으로 성공 (Stage 0)    |
+| `"cached"`       | xxhash 캐시 히트 (Pre-stage) |
+| `"failed"`       | 처리 실패 → 검토 큐 이동          |
+| `"review_queue"` | 유효성 검사 실패 → 검토 큐 이동      |
+
 
 ---
 
@@ -190,8 +246,9 @@ def run(file_bytes: bytes, filename: str, ext: str) -> dict:
 
 - `.env` 파일은 **절대 깃에 올리지 않는다**
 - API 키는 코드에 직접 작성 금지
-- Claude API 호출은 **`stage3_classify.py` 한 곳에서만** 수행
-- 다른 모듈에서 `anthropic` 라이브러리 직접 import 금지
+- **Claude API** 호출은 `**pipeline/stage3_llm_claude.py` 한 곳에서만** 수행
+- 다른 모듈에서 `anthropic` 직접 import 금지
+- **로컬 LLM (qwen)** 은 `pipeline/stage5_llm_local.py` (이세연) 에서만 호출
 
 ```python
 # ✅ 올바른 예 — .env에서 읽기
@@ -208,7 +265,7 @@ api_key = "sk-ant-xxxxxxxxxxxx"
 
 ## 6. 공용 데이터 구조 (`schemas.py`)
 
-- `EvidencePackage`, `ClassifyResult`, `FeedbackLog`, `FinalizedDocument`, `Category` 는 **`models/schemas.py` 에서만 정의**
+- `EvidencePackage`, `ClassifyResult`, `FeedbackLog`, `FinalizedDocument`, `Category` 는 `**models/schemas.py` 에서만 정의**
 - 각 모듈에서 사용 시 반드시 import해서 사용
 - 구조 변경 시 팀원 전체에게 공유 후 수정
 
@@ -241,6 +298,7 @@ pip install -r requirements.txt
 ## 8. 깃 관련 주의사항
 
 ### `.gitignore` 필수 포함 항목
+
 ```
 .env
 __pycache__/
@@ -253,10 +311,11 @@ uploads/
 ```
 
 ### push 전 체크리스트
-- [ ] `feature/` 브랜치에서 작업했는가
-- [ ] `.env` 파일이 스테이징에 포함되지 않았는가 (`git status` 확인)
-- [ ] `requirements.txt` 업데이트했는가 (새 패키지 설치 시)
-- [ ] 커밋 메시지 형식이 맞는가
+
+- `feature/` 브랜치에서 작업했는가
+- `.env` 파일이 스테이징에 포함되지 않았는가 (`git status` 확인)
+- `requirements.txt` 업데이트했는가 (새 패키지 설치 시)
+- 커밋 메시지 형식이 맞는가
 
 ---
 
@@ -279,39 +338,106 @@ http://localhost:8000/docs
 
 ---
 
-## 10. 팀원별 담당 파트 및 인터페이스 계약
+## 10. 최종 파이프라인 순서 (통합 목표)
 
-각 파트 담당자는 아래 인터페이스를 반드시 지켜야 서버가 각 모듈을 정상 호출할 수 있다.
+`feature/backend-server`의 `main.py` `run_pipeline` 은 **아래 순서**로 각 모듈을 호출한다 (중간 발표 MVP).
 
-| 파트 | 파일 | 메인 함수 | 반환 타입 |
-|------|------|-----------|-----------|
-| Pre-stage | `pipeline/pre_stage.py` | `run(file_bytes, filename, modified_at)` | `dict` |
-| Stage 0 | `pipeline/stage0_extract.py` | `run(file_bytes, filename, ext)` | `dict` |
-| Stage 1 | `pipeline/stage1_evidence.py` | `run(file_bytes, filename, ext, size_kb, modified_at, xxhash, extract_result)` | `EvidencePackage` |
-| Stage 2 | `pipeline/stage2_cluster.py` | `run(results)` | `list[ClassifyResult]` (현재 pass-through) |
-| Stage 3 | `pipeline/stage3_classify.py` | `async run(evidence, feedback_embeddings)` | `ClassifyResult` |
-| Stage 4 | `pipeline/stage4_version.py` | `run(results)` | `list[dict]` |
-| Stage 6 | `pipeline/stage6_feedback.py` | `save_feedback(log)` / `finalize_document(result)` | `None` / `FinalizedDocument` |
+```mermaid
+flowchart TD
+    A[문서 넣기<br/>김준엽] --> B[텍스트 추출 1500×3<br/>김준엽]
+    B --> C{추출 실패?}
+    C -->|예| D[OCR<br/>정건우]
+    C -->|아니오| E[룰 분류<br/>정건우]
+    D --> E
+    E --> F{신뢰도 충분?}
+    F -->|아니오| G[의미·군집·증거패키지<br/>천승원]
+    F -->|예| Z[results]
+    G --> H{신뢰도 충분?}
+    H -->|아니오| I[로컬 LLM qwen<br/>이세연]
+    H -->|예| Z
+    I --> J{신뢰도 충분?}
+    J -->|아니오| K[Claude API<br/>이세연]
+    J -->|예| Z
+    K --> L{신뢰도 충분?}
+    L -->|예| Z
+    L -->|아니오| M[검토 큐<br/>정윤서]
+    Z --> N[버전 정리 stage4]
+    N --> O[분류 완료]
+    M --> P[사용자 수정 UI]
+    P --> Q[stage6 피드백 저장]
+```
 
-> 함수 시그니처(이름, 인자, 반환 타입)를 변경해야 할 경우 반드시 서버 담당자에게 먼저 공유할 것.
 
-### 키워드·설정 파일 (팀 공동 관리)
 
-| 파일 | 수정 주체 | 용도 |
-|------|-----------|------|
-| `server/config/keywords.json` | 팀 합의 후 PR | 룰 분류용 키워드 |
-| `server/.env` | 서버 담당 (비공개) | API 키, 동시 호출 수 등 |
+**신뢰도 임계값·스킵 규칙**은 팀 회의 후 `config/rules.json`(예정) 또는 각 모듈 docstring에 명시.
+
+### 현재 구현 vs 목표 (갭 참고)
+
+
+| 목표 단계      | 현재 server 상태                |
+| ---------- | --------------------------- |
+| OCR        | 미구현 (`failed`만)             |
+| 룰(파일명·ppt) | 본문 키워드 룰만 (`keywords.json`) |
+| 의미·HDBSCAN | 임베딩만, HDBSCAN 없음            |
+| 로컬 qwen    | 미구현                         |
+| Claude     | `stage3_llm_claude.py` ✅    |
+| 검토 UI      | API만, 프론트 미연동               |
+
 
 ---
 
-## 11. API 결과 구조 (프론트·운영 참고)
+## 11. 팀원별 담당 및 인터페이스 계약
+
+
+| 담당    | 브랜치                                                 | 역할 요약                                                  |
+| ----- | --------------------------------------------------- | ------------------------------------------------------ |
+| 김준엽   | `feature/frontend-upload`, `feature/stage0-extract` | 업로드 UI, 확장자별 추출·1500×3, 한국어 메인                         |
+| 정건우   | `feature/ocr-fallback`, `feature/rule-classify`     | 추출 실패 OCR, **파일명** 키워드, ppt/pptx 강제 룰                  |
+| 천승원   | `feature/semantic-cluster`                          | 임베딩, cosine/ANN, 차원 축소, HDBSCAN≤3, **EvidencePackage** |
+| 이세연   | `feature/llm-local-qwen`, `feature/llm-claude`      | qwen2.5:3b, Claude API                                 |
+| 정윤서   | `feature/review-ui`                                 | 미리보기, 신뢰도, 사용자 수정·검토 큐                                 |
+| 서버 통합 | `feature/backend-server`                            | `main.py` 순서 연결, PR merge 조율                           |
+
+
+### 함수 계약 (변경 시 서버 담당자에게 사전 공지)
+
+
+| 파트        | 파일                     | 메인 함수                                      | 반환                                              |
+| --------- | ---------------------- | ------------------------------------------ | ----------------------------------------------- |
+| Pre-stage | `pre_stage.py`         | `run(file_bytes, filename, modified_at)`   | `dict`                                          |
+| 텍스트 추출    | `stage0_extract.py`    | `run(file_bytes, filename, ext)`           | `dict` (`success`/`failed`/`ocr_fallback`)      |
+| OCR       | `ocr_fallback.py`      | `run(file_bytes, filename, ext)`           | `dict` (추출과 동일 형식)                              |
+| 룰         | `rule_classify.py`     | `run(filename, ext, ...)`                  | `dict` 또는 `ClassifyResult | None`               |
+| 의미·군집     | `semantic_cluster.py`  | `run(...)`                                 | `EvidencePackage` + 군집 메타                       |
+| 로컬 LLM    | `stage5_llm_local.py`  | `async classify_with_qwen(pkg)`            | `dict` (category, confidence, reason, keywords) |
+| Claude    | `stage3_llm_claude.py` | `async classify_with_claude(pkg)`          | `dict` (동일)                                     |
+| 통합 분류     | `stage3_classify.py`   | `async run(evidence, feedback_embeddings)` | `ClassifyResult`                                |
+| 버전        | `stage4_version.py`    | `run(results)`                             | `list[dict]`                                    |
+| 피드백       | `stage6_feedback.py`   | `save_feedback` / `finalize_document`      | —                                               |
+
+
+> 함수 시그니처 변경은 **반드시** `feature/backend-server` 담당자와 협의 후 `schemas.py` 와 함께 수정.
+
+### 키워드·설정 파일 (팀 공동 관리)
+
+
+| 파일                            | 수정 주체       | 용도               |
+| ----------------------------- | ----------- | ---------------- |
+| `server/config/keywords.json` | 팀 합의 후 PR   | 룰 분류용 키워드        |
+| `server/.env`                 | 서버 담당 (비공개) | API 키, 동시 호출 수 등 |
+
+
+---
+
+## 12. API 결과 구조 (프론트·운영 참고)
 
 `GET /result/{job_id}` 응답 요약:
 
-| 필드 | 의미 |
-|------|------|
-| `results` | 자동 분류 **완료**된 파일 (`/confirm` 대상) |
-| `review_queue` | 분류 **실패·보류** 파일 (현재 `/confirm` 미지원) |
-| `version_groups` | Stage 4 버전 그룹 |
+
+| 필드               | 의미                                  |
+| ---------------- | ----------------------------------- |
+| `results`        | 자동 분류 **완료**된 파일 (`/confirm` 대상)    |
+| `review_queue`   | 분류 **실패·보류** 파일 (현재 `/confirm` 미지원) |
+| `version_groups` | Stage 4 버전 그룹                       |
 
 

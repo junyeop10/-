@@ -94,15 +94,16 @@ git pull origin main
 | `main` | **완성본** 공용 책 | 직접 수정·push **금지** |
 | `feature/내파트` | **내 초안 노트** | 여기서만 작업 |
 
-담당 예시 (`CONVENTIONS.md` 와 동일):
+담당 예시 (`CONVENTIONS.md` §1 과 동일):
 
 | 담당 | 브랜치 이름 |
 |------|-------------|
-| 서버 전체 | `feature/backend-server` |
-| Stage 0 | `feature/stage0-extract` |
-| Stage 1 | `feature/stage1-evidence` |
-| Stage 3 | `feature/stage3-classify` |
-| 프론트 | `feature/frontend` |
+| 서버 통합 | `feature/backend-server` |
+| 김준엽 (업로드·추출) | `feature/frontend-upload`, `feature/stage0-extract` |
+| 정건우 (OCR·룰) | `feature/ocr-fallback`, `feature/rule-classify` |
+| 천승원 (의미·군집) | `feature/semantic-cluster` |
+| 이세연 (LLM) | `feature/llm-local-qwen`, `feature/llm-claude` |
+| 정윤서 (검토 UI) | `feature/review-ui` |
 
 **본인 브랜치가 뭔지** 팀 리더에게 꼭 확인.
 
@@ -310,12 +311,13 @@ uvicorn main:app --reload
 - [ ] 본인 `feature/...` 브랜치 checkout
 - [ ] 테스트 commit 1개 + push + PR 연습 (문서 한 줄 수정도 OK)
 
-### Stage 담당 (pipeline 수정)
+### 파이프라인 담당 (pipeline 수정)
 
-- [ ] `server/models/schemas.py` 에서 입출력 구조 확인
-- [ ] 본인 `stageN_*.py` 만 수정 (다른 stage 파일 건드리지 않기)
-- [ ] `run()` 시그니처 변경 시 **서버 담당자에게 먼저** 공지
-- [ ] 로컬에서 `cd server` → `uvicorn main:app --reload` 로 동작 확인
+- [ ] `rules/CONVENTIONS.md` §10 파이프라인 순서·본인 브랜치 확인
+- [ ] `server/models/schemas.py` 입출력 구조 확인
+- [ ] **본인 담당 파일만** 수정 (예: 이세연 → `stage3_llm_claude.py` 만)
+- [ ] `run()` / `classify_with_*` 시그니처 변경 시 **서버 담당자에게 먼저** 공지
+- [ ] `cd server` → `uvicorn main:app --reload` 로 동작 확인
 
 ### 프론트엔드 담당
 
