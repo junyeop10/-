@@ -1,7 +1,5 @@
 import asyncio
-import json
 import os
-import re
 from pathlib import Path
 
 import numpy as np
@@ -20,11 +18,6 @@ CATEGORY_NAME_MAP = {
     "참고자료": Category.REFERENCE,
     "작업중": Category.DRAFT,
 }
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MAX_CONCURRENT_LLM = int(os.getenv("MAX_CONCURRENT_LLM", "5"))
-
-_llm_semaphore: asyncio.Semaphore | None = None
 
 KEYWORD_TO_CATEGORY = {
     "최종": Category.FINAL,
@@ -62,13 +55,6 @@ CATEGORY_KEYWORD_GROUPS = {
     Category.REFERENCE: ["참고", "reference", "논문", "조사"],
     Category.DRAFT: ["draft", "임시", "temp", "wip", "작업중"],
 }
-
-
-def _get_semaphore() -> asyncio.Semaphore:
-    global _llm_semaphore
-    if _llm_semaphore is None:
-        _llm_semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
-    return _llm_semaphore
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -160,45 +146,12 @@ def _embedding_classify(
 
 
 async def _call_llm(evidence: EvidencePackage) -> dict | None:
-    if not ANTHROPIC_API_KEY:
+    """Claude LLM 분류 (stage5_llm_claude 모듈 위임)."""
+    from pipeline.stage5_llm_claude import classify_with_claude
+
+    result = await classify_with_claude(evidence)
+    if result.get("reason") in ("API 오류", "JSON 파싱 실패"):
         return None
-
-    categories = [c.value for c in Category if c != Category.UNCLASSIFIED]
-    prompt = f"""다음 파일을 분류하세요. JSON만 반환하세요.
-
-파일명: {evidence.filename}
-확장자: {evidence.ext}
-text_front: {evidence.text_front[:500]}
-text_middle: {evidence.text_middle[:500]}
-text_rear: {evidence.text_rear[:500]}
-keyword_hits: {evidence.keyword_hits}
-카테고리 목록: {categories}
-
-응답 형식: {{"category": str, "confidence": float, "reason": str, "keywords": list}}"""
-
-    import anthropic
-
-    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-
-    async def _request() -> dict | None:
-        async with _get_semaphore():
-            try:
-                message = await client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=300,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                text = message.content[0].text
-                match = re.search(r"\{.*\}", text, re.DOTALL)
-                if not match:
-                    return None
-                return json.loads(match.group())
-            except Exception:
-                return None
-
-    result = await _request()
-    if result is None:
-        result = await _request()
     return result
 
 
