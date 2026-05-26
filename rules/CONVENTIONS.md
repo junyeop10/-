@@ -11,38 +11,39 @@
 
 ### 중간 발표 범위 (MVP)
 
-**학습(Stage 7)·배포(Stage 8) 전까지** 구현·발표한다.
+**Stage 8(피드백·학습) 전까지** 구현·발표한다. (플로우차트 v2 기준)
 
+| 포함 (Stage 0~7) | 제외 (Stage 8+) |
+|------------------|-----------------|
+| 업로드 → ①텍스트 추출 → ②OCR → ③룰분류 → ④임베딩 → ⑤LLM → ⑥군집 → ⑦최종분류·검토 | 사용자 피드백 학습(Fine-tune/LoRA), 모델 배포 |
 
-| 포함                                                       | 제외                        |
-| -------------------------------------------------------- | ------------------------- |
-| 문서 넣기 → 추출 → OCR → 룰 → 의미·군집 → 증거 패키지 → 로컬/외부 LLM → 검토 큐 | 학습(Fine-tune/LoRA), 모델 배포 |
-
-
-### 브랜치 구조 (역할 기준)
+### 브랜치 구조 (플로우차트 v2 · Stage 번호 정렬)
 
 ```
 main
-├── feature/backend-server      ← 서버 통합 (main.py 파이프라인 연결만)
-├── feature/frontend-upload     ← 김준엽: 드래그앤드롭·폴더 업로드 UI
-├── feature/stage0-extract      ← 김준엽: 확장자별 텍스트 추출, 1500×3
-├── feature/ocr-fallback        ← 정건우: 추출 실패 → OCR
-├── feature/rule-classify       ← 정건우: 파일명 키워드, ppt/pptx 강제 룰
-├── feature/semantic-cluster    ← 천승원: 임베딩·ANN/cosine·HDBSCAN(≤3)·증거 패키지
-├── feature/llm-local-qwen      ← 이세연: 로컬 LLM (qwen2.5:3b)
-├── feature/llm-claude          ← 이세연: 외부 API (Claude)
-├── feature/review-ui           ← 정윤서: 검토 큐 UI·신뢰도·수정
-├── feature/stage4-version      ← 버전 정리 (사용자 협의)
-└── hotfix/...                  ← 긴급 버그만
+├── feature/backend-server       ← 서버 통합 (main.py 파이프라인 순서 연결)
+├── feature/frontend-upload      ← 김준엽: 파일 업로드 UI
+├── feature/stage1-extract       ← 김준엽: Stage1 텍스트 추출 (PDF/HWP/DOCX/TXT, 1500×3)
+├── feature/stage2-ocr           ← 정건우: Stage2 OCR·전처리 (이미지·스캔 PDF, 노이즈 제거)
+├── feature/stage3-rule          ← 정건우: Stage3 키워드·룰·파일명 1차 분류
+├── feature/stage4-embedding     ← 천승원: Stage4 임베딩·벡터화 (Sentence-BERT 등)
+├── feature/stage5-llm-local     ← 이세연: Stage5 로컬 LLM (qwen2.5 Ollama)
+├── feature/stage5-llm-claude    ← 이세연: Stage5 외부 API (Claude, 필요 시만)
+├── feature/stage6-cluster       ← 천승원: Stage6 HDBSCAN 군집
+├── feature/stage7-review        ← 정윤서: Stage7 최종 분류·검토 UI
+└── hotfix/...
 ```
 
-**Deprecated (새 작업 금지 · merge 후 삭제 예정)**
+**Deprecated (v1 브랜치 · merge 후 정리)**
 
-- `feature/stage1-evidence` → `feature/semantic-cluster` 로 통합
-- `feature/stage2-cluster` → `feature/semantic-cluster`
-- `feature/stage3-classify` → `feature/rule-classify` + `feature/llm-claude` + `feature/llm-local-qwen`
-- `feature/stage6-feedback` → 검토·피드백은 `feature/review-ui` + `stage6_feedback.py` 유지
-- `feature/frontend` → `feature/frontend-upload` 로 이름 통일 권장
+- `feature/stage0-extract` → `feature/stage1-extract`
+- `feature/ocr-fallback` → `feature/stage2-ocr`
+- `feature/rule-classify` → `feature/stage3-rule`
+- `feature/semantic-cluster` → `feature/stage4-embedding` + `feature/stage6-cluster` 로 분리
+- `feature/llm-local-qwen` → `feature/stage5-llm-local`
+- `feature/llm-claude` → `feature/stage5-llm-claude`
+- `feature/review-ui` → `feature/stage7-review`
+- `feature/stage1-evidence`, `feature/stage2-cluster`, `feature/stage3-classify` (구 통합 코드)
 
 ### 규칙
 
@@ -107,13 +108,17 @@ project-root/
 │   │   └── loader.py         ← JSON 로드
 │   ├── pipeline/
 │   │   ├── __init__.py
-│   │   ├── pre_stage.py
-│   │   ├── stage0_extract.py
-│   │   ├── stage1_evidence.py
-│   │   ├── stage2_cluster.py
-│   │   ├── stage3_classify.py
-│   │   ├── stage4_version.py
-│   │   └── stage6_feedback.py
+│   │   ├── pre_stage.py              # 캐시·유효성 (업로드 직후)
+│   │   ├── stage1_extract.py         # Stage1 텍스트 추출 (구 stage0_extract)
+│   │   ├── stage2_ocr.py             # Stage2 OCR·전처리
+│   │   ├── stage3_rule.py            # Stage3 룰·키워드 분류
+│   │   ├── stage4_embedding.py       # Stage4 임베딩
+│   │   ├── stage5_llm_local.py       # Stage5 로컬 LLM
+│   │   ├── stage5_llm_claude.py      # Stage5 Claude API
+│   │   ├── stage6_cluster.py         # Stage6 HDBSCAN
+│   │   ├── stage7_review.py          # Stage7 최종·검토 (신규)
+│   │   ├── stage8_feedback.py        # Stage8 학습 (중간 발표 제외)
+│   │   └── (구) stage0_extract, stage1_evidence, stage3_classify … # 이전 통합
 │   ├── models/
 │   │   ├── __init__.py
 │   │   └── schemas.py        ← 공용 데이터 구조 (전 파트 참고)
@@ -140,22 +145,21 @@ project-root/
 - 파이프라인 모듈: `stage{번호}_{역할}.py` 또는 역할명 (`ocr_fallback.py`, `rule_classify.py`, `stage3_llm_claude.py` 등)
 - **담당 브랜치와 1:1** 로 파일을 맞추고, 타 담당 파일은 PR에서 수정하지 않음
 
-### 파이프라인 목표 파일 (통합 시 `main.py`가 호출)
+### 파이프라인 목표 파일 (플로우차트 v2 ↔ `main.py` 호출 순서)
 
+| Stage | 단계 | 목표 파일 | 담당 |
+|:-----:|------|-----------|------|
+| — | Pre (캐시·검증) | `pre_stage.py` | 서버 |
+| 1 | 텍스트 추출 | `stage1_extract.py` | 김준엽 — PDF/HWP/DOCX/TXT, 1500×3 |
+| 2 | OCR·전처리 | `stage2_ocr.py` | 정건우 — 이미지·스캔 PDF, 노이즈 제거 |
+| 3 | 키워드·룰 1차 분류 | `stage3_rule.py` | 정건우 — 키워드·**파일명 규칙**, ppt/pptx |
+| 4 | 임베딩·벡터화 | `stage4_embedding.py` | 천승원 — Sentence-BERT 등 |
+| 5 | LLM 심층 분석 | `stage5_llm_local.py`, `stage5_llm_claude.py` | 이세연 — **로컬 qwen 우선**, Claude는 필요 시 |
+| 6 | 군집화 | `stage6_cluster.py` | 천승원 — HDBSCAN, 유사 문서 그룹 |
+| 7 | 최종 분류·검토 | `stage7_review.py` + 프론트 | 정윤서 — LLM+군집 결과 종합, UI |
+| 8 | 피드백·학습 | `stage8_feedback.py` | 중간 발표 **제외** |
 
-| 단계         | 목표 파일 (신규·이전)                                      | 담당     |
-| ---------- | -------------------------------------------------- | ------ |
-| Pre-stage  | `pre_stage.py`                                     | 서버 통합  |
-| 텍스트 추출     | `stage0_extract.py`                                | 김준엽    |
-| OCR        | `ocr_fallback.py` (신규)                             | 정건우    |
-| 룰 분류       | `rule_classify.py` (신규)                            | 정건우    |
-| 의미·군집      | `semantic_cluster.py` (신규)                         | 천승원    |
-| 증거 패키지     | `semantic_cluster.py` 또는 `stage1_evidence.py` (이전) | 천승원    |
-| 로컬 LLM     | `stage5_llm_local.py` (신규)                         | 이세연    |
-| 외부 LLM     | `stage3_llm_claude.py`                             | 이세연    |
-| 분류 오케스트레이션 | `stage3_classify.py` (임시·통합용)                      | 서버 통합  |
-| 버전 정리      | `stage4_version.py`                                | 협의     |
-| 피드백 DB     | `stage6_feedback.py`                               | 정윤서·서버 |
+> `EvidencePackage`는 Stage4 이후·Stage5 LLM **입력 직전**에 조립 (서버 통합 또는 `stage4_embedding`에서 생성 — 팀 협의).
 
 
 ---
@@ -246,9 +250,9 @@ def run(file_bytes: bytes, filename: str, ext: str) -> dict:
 
 - `.env` 파일은 **절대 깃에 올리지 않는다**
 - API 키는 코드에 직접 작성 금지
-- **Claude API** 호출은 `**pipeline/stage3_llm_claude.py` 한 곳에서만** 수행
+- **Claude API** 호출은 `pipeline/stage5_llm_claude.py` 한 곳에서만 수행
 - 다른 모듈에서 `anthropic` 직접 import 금지
-- **로컬 LLM (qwen)** 은 `pipeline/stage5_llm_local.py` (이세연) 에서만 호출
+- **로컬 LLM (qwen/Ollama)** 은 `pipeline/stage5_llm_local.py` (이세연) 에서만 호출
 
 ```python
 # ✅ 올바른 예 — .env에서 읽기
@@ -338,82 +342,106 @@ http://localhost:8000/docs
 
 ---
 
-## 10. 최종 파이프라인 순서 (통합 목표)
+## 10. 최종 파이프라인 (플로우차트 v2)
 
-`feature/backend-server`의 `main.py` `run_pipeline` 은 **아래 순서**로 각 모듈을 호출한다 (중간 발표 MVP).
+`main.py` `run_pipeline` 은 **Stage 1 → 7** 순서로 호출한다.
+
+### 10-1. Stage별 요약 (공식 플로우차트)
+
+| Stage | 이름 | 담당 | 핵심 |
+|:-----:|------|------|------|
+| — | 파일 업로드 | 김준엽 | 드래그앤드롭·폴더 |
+| **1** | 텍스트 추출 | 김준엽 | PDF/HWP/DOCX/TXT, 한국어 메인, 1500×3 |
+| **2** | OCR·전처리 | 정건우 | 이미지·스캔 PDF, 노이즈 제거 |
+| **3** | 키워드·룰 1차 분류 | 정건우 | 키워드·파일명 규칙, ppt/pptx |
+| **4** | 임베딩·벡터화 | 천승원 | Sentence-BERT, 벡터 공간 |
+| **5** | LLM 심층 분석 | 이세연 | qwen2.5(Ollama) 우선, Claude 선택, 프롬프트 |
+| **6** | 군집화 | 천승원 | HDBSCAN, 유사 문서·신규 카테고리 제안 |
+| **7** | 최종 분류·검토 | 정윤서 | LLM+군집 종합, 신뢰도·UI |
+| **8** | 피드백·학습 | (후속) | 오분류 수정·학습 — **중간 발표 제외** |
+
+### 10-2. 전체 플로우 (mermaid)
 
 ```mermaid
 flowchart TD
-    A[문서 넣기<br/>김준엽] --> B[텍스트 추출 1500×3<br/>김준엽]
-    B --> C{추출 실패?}
-    C -->|예| D[OCR<br/>정건우]
-    C -->|아니오| E[룰 분류<br/>정건우]
-    D --> E
-    E --> F{신뢰도 충분?}
-    F -->|아니오| G[의미·군집·증거패키지<br/>천승원]
-    F -->|예| Z[results]
-    G --> H{신뢰도 충분?}
-    H -->|아니오| I[로컬 LLM qwen<br/>이세연]
-    H -->|예| Z
-    I --> J{신뢰도 충분?}
-    J -->|아니오| K[Claude API<br/>이세연]
-    J -->|예| Z
-    K --> L{신뢰도 충분?}
-    L -->|예| Z
-    L -->|아니오| M[검토 큐<br/>정윤서]
-    Z --> N[버전 정리 stage4]
-    N --> O[분류 완료]
-    M --> P[사용자 수정 UI]
-    P --> Q[stage6 피드백 저장]
+    U[파일 업로드<br/>김준엽] --> S1[Stage1 텍스트 추출<br/>김준엽]
+    S1 --> S2{추출 실패·이미지?}
+    S2 -->|예| S2O[Stage2 OCR·전처리<br/>정건우]
+    S2 -->|아니오| S3[Stage3 키워드·룰<br/>정건우]
+    S2O --> S3
+    S3 --> S3OK{1차 분류 확정?}
+    S3OK -->|예| S7
+    S3OK -->|아니오| S4[Stage4 임베딩<br/>천승원]
+    S4 --> S5L[Stage5 로컬 LLM qwen<br/>이세연]
+    S5L --> S5C{필요 시}
+    S5C -->|예| S5A[Stage5 Claude API<br/>이세연]
+    S5C -->|아니오| S6
+    S5A --> S6[Stage6 HDBSCAN 군집<br/>천승원]
+    S6 --> S7[Stage7 최종 분류·검토<br/>정윤서]
+    S7 --> END[분류 완료]
+    S7 -.->|Stage8| S8[피드백·학습<br/>중간발표 제외]
 ```
 
+### 10-3. Stage 5 LLM (이세연) — 동작 원칙
 
+- **로컬 LLM(qwen2.5 3B/7B, Ollama)** 을 기본으로 사용 (비용·프라이버시).
+- 신뢰도 부족·복잡 케이스만 **Claude API** 호출.
+- 입력: 추출 텍스트(1500×3), Stage4 임베딩, `EvidencePackage`(프롬프트 컨텍스트).
+- 출력: `category`, `confidence`, `reason`, `keywords` (JSON).
 
-**신뢰도 임계값·스킵 규칙**은 팀 회의 후 `config/rules.json`(예정) 또는 각 모듈 docstring에 명시.
+### 10-4. 설정 파일
 
-### 현재 구현 vs 목표 (갭 참고)
+| 파일 | Stage | 용도 |
+|------|:-----:|------|
+| `config/keywords.json` | 3 | 룰·키워드 (파일명·본문 협의) |
+| `config/embedding.json` (예정) | 4 | SBERT 모델명 등 |
+| `config/cluster.json` (예정) | 6 | HDBSCAN 파라미터 |
+| `.env` | 5 | `ANTHROPIC_API_KEY`, `MAX_CONCURRENT_LLM`, Ollama URL |
 
+### 10-5. 현재 코드 vs v2 (갭)
 
-| 목표 단계      | 현재 server 상태                |
-| ---------- | --------------------------- |
-| OCR        | 미구현 (`failed`만)             |
-| 룰(파일명·ppt) | 본문 키워드 룰만 (`keywords.json`) |
-| 의미·HDBSCAN | 임베딩만, HDBSCAN 없음            |
-| 로컬 qwen    | 미구현                         |
-| Claude     | `stage3_llm_claude.py` ✅    |
-| 검토 UI      | API만, 프론트 미연동               |
+| v2 Stage | 현재 server |
+|:--------:|-------------|
+| 1 추출 | `stage0_extract.py` (이름만 다름) ✅ |
+| 2 OCR | ❌ 미구현 |
+| 3 룰 | `stage3_classify` 일부 (통합) |
+| 4 임베딩 | `stage1_evidence`에 혼재 |
+| 5 LLM | `stage5_llm_claude` ✅ / qwen ❌ |
+| 6 군집 | `stage2_cluster` pass-through |
+| 7 검토 | API만, `stage7_review` ❌ |
+| 순서 | ⚠️ 구현은 룰→임베딩→LLM 혼합, **v2는 임베딩→LLM→군집→검토** |
 
 
 ---
 
-## 11. 팀원별 담당 및 인터페이스 계약
+## 11. 팀원별 담당 및 인터페이스 계약 (v2)
 
 
-| 담당    | 브랜치                                                 | 역할 요약                                                  |
-| ----- | --------------------------------------------------- | ------------------------------------------------------ |
-| 김준엽   | `feature/frontend-upload`, `feature/stage0-extract` | 업로드 UI, 확장자별 추출·1500×3, 한국어 메인                         |
-| 정건우   | `feature/ocr-fallback`, `feature/rule-classify`     | 추출 실패 OCR, **파일명** 키워드, ppt/pptx 강제 룰                  |
-| 천승원   | `feature/semantic-cluster`                          | 임베딩, cosine/ANN, 차원 축소, HDBSCAN≤3, **EvidencePackage** |
-| 이세연   | `feature/llm-local-qwen`, `feature/llm-claude`      | qwen2.5:3b, Claude API                                 |
-| 정윤서   | `feature/review-ui`                                 | 미리보기, 신뢰도, 사용자 수정·검토 큐                                 |
-| 서버 통합 | `feature/backend-server`                            | `main.py` 순서 연결, PR merge 조율                           |
+| 담당 | 브랜치 | Stage |
+|------|--------|:-----:|
+| 김준엽 | `feature/frontend-upload`, `feature/stage1-extract` | 업로드, 1 |
+| 정건우 | `feature/stage2-ocr`, `feature/stage3-rule` | 2, 3 |
+| 천승원 | `feature/stage4-embedding`, `feature/stage6-cluster` | 4, 6 |
+| 이세연 | `feature/stage5-llm-local`, `feature/stage5-llm-claude` | 5 |
+| 정윤서 | `feature/stage7-review` | 7 |
+| 서버 | `feature/backend-server` | Pre + 파이프라인 연결 |
 
 
-### 함수 계약 (변경 시 서버 담당자에게 사전 공지)
+### 함수 계약 (변경 시 서버 담당자 사전 공지)
 
 
-| 파트        | 파일                     | 메인 함수                                      | 반환                                              |
-| --------- | ---------------------- | ------------------------------------------ | ----------------------------------------------- |
-| Pre-stage | `pre_stage.py`         | `run(file_bytes, filename, modified_at)`   | `dict`                                          |
-| 텍스트 추출    | `stage0_extract.py`    | `run(file_bytes, filename, ext)`           | `dict` (`success`/`failed`/`ocr_fallback`)      |
-| OCR       | `ocr_fallback.py`      | `run(file_bytes, filename, ext)`           | `dict` (추출과 동일 형식)                              |
-| 룰         | `rule_classify.py`     | `run(filename, ext, ...)`                  | `dict` 또는 `ClassifyResult | None`               |
-| 의미·군집     | `semantic_cluster.py`  | `run(...)`                                 | `EvidencePackage` + 군집 메타                       |
-| 로컬 LLM    | `stage5_llm_local.py`  | `async classify_with_qwen(pkg)`            | `dict` (category, confidence, reason, keywords) |
-| Claude    | `stage3_llm_claude.py` | `async classify_with_claude(pkg)`          | `dict` (동일)                                     |
-| 통합 분류     | `stage3_classify.py`   | `async run(evidence, feedback_embeddings)` | `ClassifyResult`                                |
-| 버전        | `stage4_version.py`    | `run(results)`                             | `list[dict]`                                    |
-| 피드백       | `stage6_feedback.py`   | `save_feedback` / `finalize_document`      | —                                               |
+| Stage | 파일 | 메인 함수 | 반환 |
+|:-----:|------|-----------|------|
+| Pre | `pre_stage.py` | `run(file_bytes, filename, modified_at)` | `dict` |
+| 1 | `stage1_extract.py` | `run(file_bytes, filename, ext)` | `dict` |
+| 2 | `stage2_ocr.py` | `run(file_bytes, filename, ext)` | `dict` |
+| 3 | `stage3_rule.py` | `run(filename, ext, extract_result, ...)` | `ClassifyResult \| None` |
+| 4 | `stage4_embedding.py` | `run(text_chunks, ...)` → `EvidencePackage` 조립 포함 가능 | `list[float]` / `EvidencePackage` |
+| 5 | `stage5_llm_local.py` | `async classify_with_qwen(pkg)` | `dict` |
+| 5 | `stage5_llm_claude.py` | `async classify_with_claude(pkg)` | `dict` |
+| 6 | `stage6_cluster.py` | `run(job_embeddings)` | `list[dict]` 군집 메타 |
+| 7 | `stage7_review.py` | `run(llm_results, clusters)` | `list[ClassifyResult]` |
+| 8 | `stage8_feedback.py` | `save_feedback` … | — (MVP 제외) |
 
 
 > 함수 시그니처 변경은 **반드시** `feature/backend-server` 담당자와 협의 후 `schemas.py` 와 함께 수정.
@@ -423,7 +451,7 @@ flowchart TD
 
 | 파일                            | 수정 주체       | 용도               |
 | ----------------------------- | ----------- | ---------------- |
-| `server/config/keywords.json` | 팀 합의 후 PR   | 룰 분류용 키워드        |
+| `server/config/keywords.json` | 팀 합의 후 PR | ⚠️ 현재 본문용 — 룰용은 `keywords_filename.json` 분리 예정 |
 | `server/.env`                 | 서버 담당 (비공개) | API 키, 동시 호출 수 등 |
 
 
