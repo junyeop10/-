@@ -16,10 +16,14 @@ from models.schemas import Category, ClassifyResult, EvidencePackage, FeedbackLo
 from pipeline import (
     pre_stage,
     stage0_extract,
-    stage1_evidence,
+    stage2_ocr,
     stage3_classify,
+    stage3_rule,
+    stage4_embedding,
     stage4_version,
+    stage6_cluster,
     stage6_feedback,
+    stage7_review,
 )
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -73,6 +77,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     total = len(files_info)
     results: list[ClassifyResult] = []
     review_queue: list[dict] = []
+    cluster_job_items: list[dict] = []
     feedback_embeddings = stage6_feedback.get_feedback_embeddings()
 
     for idx, info in enumerate(files_info, start=1):
@@ -149,7 +154,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage0_extract",
+                    "stage": "stage1_extract",
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
@@ -157,14 +162,30 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             )
             extract_result = stage0_extract.run(file_bytes, filename, ext)
 
+            await broadcast(
+                job_id,
+                {
+                    "stage": "stage2_ocr",
+                    "progress": progress,
+                    "current_file": filename,
+                    "status": "running",
+                },
+            )
+            extract_result = stage2_ocr.run(
+                file_bytes, filename, ext, extract_result
+            )
+
             if extract_result["status"] == "failed":
                 review_queue.append(
-                    {"filename": filename, "reason": "텍스트 추출 실패"}
+                    {
+                        "filename": filename,
+                        "reason": extract_result.get("reason", "텍스트 추출 실패"),
+                    }
                 )
                 await broadcast(
                     job_id,
                     {
-                        "stage": "stage0_extract",
+                        "stage": "stage2_ocr",
                         "progress": progress,
                         "current_file": filename,
                         "status": "review_queue",
@@ -175,22 +196,57 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage1_evidence",
+                    "stage": "stage3_rule",
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
                 },
             )
-            evidence = stage1_evidence.run(
-                file_bytes, filename, ext, size_kb, modified_at, xxhash, extract_result
-            )
-            stage4_version.register_embedding(xxhash, evidence.embedding)
-            _job_embeddings.setdefault(job_id, {})[xxhash] = evidence.embedding
+            rule_result = stage3_rule.run(filename, ext, xxhash)
+            if rule_result is not None:
+                rule_result.file_path = file_path
+                cache.set_cache(
+                    xxhash, rule_result.category.value, rule_result.confidence
+                )
+                results.append(rule_result)
+                await broadcast(
+                    job_id,
+                    {
+                        "stage": "stage3_rule",
+                        "progress": progress,
+                        "current_file": filename,
+                        "status": "rule",
+                    },
+                )
+                continue
 
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage3_classify",
+                    "stage": "stage4_embedding",
+                    "progress": progress,
+                    "current_file": filename,
+                    "status": "running",
+                },
+            )
+            evidence = stage4_embedding.run(
+                file_bytes, filename, ext, size_kb, modified_at, xxhash, extract_result
+            )
+            stage4_version.register_embedding(xxhash, evidence.embedding)
+            _job_embeddings.setdefault(job_id, {})[xxhash] = evidence.embedding
+            if evidence.embedding:
+                cluster_job_items.append(
+                    {
+                        "xxhash": xxhash,
+                        "embedding": evidence.embedding,
+                        "filename": filename,
+                    }
+                )
+
+            await broadcast(
+                job_id,
+                {
+                    "stage": "stage5_llm",
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
@@ -216,7 +272,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage3_classify",
+                    "stage": "stage5_llm",
                     "progress": progress,
                     "current_file": filename,
                     "status": result.classify_method,
@@ -239,6 +295,17 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     await broadcast(
         job_id,
         {
+            "stage": "stage6_cluster",
+            "progress": f"{total}/{total}",
+            "current_file": "",
+            "status": "running",
+        },
+    )
+    clusters = stage6_cluster.run(cluster_job_items)
+
+    await broadcast(
+        job_id,
+        {
             "stage": "stage4_version",
             "progress": f"{total}/{total}",
             "current_file": "",
@@ -249,11 +316,14 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     version_groups = stage4_version.run(results)
     stage4_version.clear_embeddings()
 
+    reviewed = stage7_review.run(results, review_queue, clusters)
+
     _job_results[job_id] = {
         "status": "completed",
-        "results": results,
+        "results": reviewed["results"],
         "version_groups": version_groups,
-        "review_queue": review_queue,
+        "review_queue": reviewed["review_queue"],
+        "clusters": reviewed["clusters"],
     }
 
     await broadcast(
@@ -311,7 +381,13 @@ async def upload(
             }
         )
 
-    _job_results[job_id] = {"status": "processing", "results": [], "version_groups": [], "review_queue": []}
+    _job_results[job_id] = {
+        "status": "processing",
+        "results": [],
+        "version_groups": [],
+        "review_queue": [],
+        "clusters": [],
+    }
     background_tasks.add_task(run_pipeline, job_id, files_info)
 
     return {"job_id": job_id, "file_count": len(files_info)}
@@ -413,6 +489,7 @@ async def get_result(job_id: str):
             "results": [],
             "version_groups": [],
             "review_queue": [],
+            "clusters": [],
         }
 
     return {
@@ -424,4 +501,5 @@ async def get_result(job_id: str):
             _version_group_to_dict(g) for g in job_data.get("version_groups", [])
         ],
         "review_queue": job_data.get("review_queue", []),
+        "clusters": job_data.get("clusters", []),
     }

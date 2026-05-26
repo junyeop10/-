@@ -145,14 +145,31 @@ def _embedding_classify(
     )
 
 
-async def _call_llm(evidence: EvidencePackage) -> dict | None:
-    """Claude LLM 분류 (stage5_llm_claude 모듈 위임)."""
-    from pipeline.stage5_llm_claude import classify_with_claude
+LLM_MIN_CONFIDENCE = float(os.getenv("LLM_MIN_CONFIDENCE", "0.60"))
+_LLM_FAILURE_REASONS = frozenset(
+    {"API 오류", "JSON 파싱 실패", "Ollama 미연결"}
+)
 
-    result = await classify_with_claude(evidence)
-    if result.get("reason") in ("API 오류", "JSON 파싱 실패"):
-        return None
-    return result
+
+async def _call_llm(evidence: EvidencePackage) -> tuple[dict | None, str]:
+    """
+    Qwen(Ollama) 우선, 실패·저신뢰 시 Claude 폴백.
+
+    반환: (llm_data 또는 None, classify_method: llm_local | llm)
+    """
+    from pipeline.stage5_llm_claude import classify_with_claude
+    from pipeline.stage5_llm_local import classify_with_qwen
+
+    local = await classify_with_qwen(evidence)
+    if local.get("reason") not in _LLM_FAILURE_REASONS:
+        conf = float(local.get("confidence", 0))
+        if conf >= LLM_MIN_CONFIDENCE and local.get("category") != "분류불가":
+            return local, "llm_local"
+
+    cloud = await classify_with_claude(evidence)
+    if cloud.get("reason") in _LLM_FAILURE_REASONS:
+        return None, "llm"
+    return cloud, "llm"
 
 
 def _review_queue_result(
@@ -175,21 +192,18 @@ def _review_queue_result(
 async def run(
     evidence: EvidencePackage, feedback_embeddings: list[dict]
 ) -> ClassifyResult:
+    """Stage 5 — 임베딩 유사도(피드백) 후 LLM(Qwen → Claude). 룰은 main에서 stage3_rule."""
     try:
-        rule_result = _rule_classify(evidence)
-        if rule_result is not None:
-            return rule_result
-
         emb_result = _embedding_classify(evidence, feedback_embeddings)
         if emb_result is not None:
             return emb_result
 
-        llm_data = await _call_llm(evidence)
+        llm_data, llm_method = await _call_llm(evidence)
         if llm_data is None:
             return _review_queue_result(evidence, "LLM 분류 실패")
 
         confidence = float(llm_data.get("confidence", 0))
-        if confidence < 0.60:
+        if confidence < LLM_MIN_CONFIDENCE:
             return _review_queue_result(evidence, "LLM 신뢰도 부족")
 
         cat_str = llm_data.get("category", "")
@@ -211,7 +225,7 @@ async def run(
             confidence=confidence,
             reason=llm_data.get("reason", ""),
             keywords=llm_data.get("keywords", evidence.keyword_hits),
-            classify_method="llm",
+            classify_method=llm_method,
             version_hint=evidence.version_hint,
         )
     except Exception as e:

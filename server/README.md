@@ -22,12 +22,22 @@ pip install python-multipart
 copy .env.example .env
 ```
 
-`.env` 파일을 열어 `ANTHROPIC_API_KEY`를 실제 키로 바꿉니다. (LLM 분류 테스트 시 필요)
+`.env` 파일을 열어 키·Ollama 설정을 맞춥니다.
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:3b
 MAX_CONCURRENT_LLM=5
+LLM_MIN_CONFIDENCE=0.60
 MAX_FILE_SIZE_MB=50
+```
+
+**로컬 Qwen (Stage 5):** [Ollama](https://ollama.com) 설치 후 `ollama pull qwen2.5:3b` 실행. 미실행 시 Claude API로 자동 폴백합니다.
+
+```powershell
+python test_qwen.py
+python test_claude.py
 ```
 
 > `.env`는 git에 올라가지 않습니다. `git add` 전에 `.gitignore`에 `.env`가 있는지 확인하세요.
@@ -144,7 +154,8 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));
 | `python-multipart` 오류 | 미설치 | `pip install python-multipart` |
 | `results`가 비어 있음 | 텍스트 추출 실패 / 임베딩 오류 | PDF·docx로 테스트; NumPy 오류 시 룰·LLM만 동작 |
 | WebSocket 메시지 없음 | 업로드 **후** 연결 | 업로드 **전** WebSocket 연결 |
-| LLM 분류 안 됨 | `.env` API 키 없음/잘못됨 | `.env`의 `ANTHROPIC_API_KEY` 확인 |
+| LLM 분류 안 됨 | API 키·Ollama 미실행 | `ANTHROPIC_API_KEY` 또는 `ollama serve` 확인 |
+| `classify_method: llm_local` 없음 | Qwen 실패 후 Claude만 사용 | Ollama 모델 pull·`.env`의 `OLLAMA_MODEL` 확인 |
 
 ---
 
@@ -160,7 +171,7 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));
 **연결 방식:** 별도 API 호출 없음. `/upload` → Stage1·Stage3가 시작할 때 로드된 `BASE_KEYWORDS`를 자동 사용.
 
 ```text
-keywords.json  →  loader.py (서버 시작 시 load)  →  stage1_evidence / stage3_classify
+keywords.json  →  loader.py (서버 시작 시 load)  →  stage3_rule (파일명) / stage1_evidence (본문)
 ```
 
 팀에서 키워드를 바꾼 뒤:
@@ -181,7 +192,9 @@ server/
 ├── config/
 │   ├── keywords.json    # 팀 키워드 (여기 수정)
 │   └── loader.py        # JSON → BASE_KEYWORDS
-├── pipeline/            # 분류 파이프라인 단계
+├── pipeline/            # v2: extract→ocr→rule→embedding→llm→cluster→review
+│   ├── stage5_llm_local.py   # Qwen (Ollama)
+│   └── stage5_llm_claude.py    # Claude 폴백
 ├── models/schemas.py    # 데이터 모델
 ├── db/cache.py          # xxhash SQLite 캐시
 ├── uploads/             # 업로드 임시 저장 (git 제외)

@@ -403,13 +403,13 @@ flowchart TD
 | v2 Stage | 현재 server |
 |:--------:|-------------|
 | 1 추출 | `stage0_extract.py` (이름만 다름) ✅ |
-| 2 OCR | ❌ 미구현 |
-| 3 룰 | `stage3_classify` 일부 (통합) |
-| 4 임베딩 | `stage1_evidence`에 혼재 |
-| 5 LLM | `stage5_llm_claude` ✅ / qwen ❌ |
-| 6 군집 | `stage2_cluster` pass-through |
-| 7 검토 | API만, `stage7_review` ❌ |
-| 순서 | ⚠️ 구현은 룰→임베딩→LLM 혼합, **v2는 임베딩→LLM→군집→검토** |
+| 2 OCR | `stage2_ocr.py` 스텁 (실 OCR는 담당자 확장) |
+| 3 룰 | `stage3_rule.py` (파일명 키워드) ✅ |
+| 4 임베딩 | `stage4_embedding.py` → `stage1_evidence` 위임 ✅ |
+| 5 LLM | `stage5_llm_claude` ✅ / `stage5_llm_local` ✅ (Qwen→Claude) |
+| 6 군집 | `stage6_cluster.py` (HDBSCAN) ✅ |
+| 7 검토 | `stage7_review.py` + API ✅ |
+| 순서 | ✅ `main.py`: 추출→OCR→룰→임베딩→LLM→군집→버전→검토 |
 
 
 ---
