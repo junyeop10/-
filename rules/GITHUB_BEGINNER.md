@@ -94,15 +94,16 @@ git pull origin main
 | `main` | **완성본** 공용 책 | 직접 수정·push **금지** |
 | `feature/내파트` | **내 초안 노트** | 여기서만 작업 |
 
-담당 예시 (`CONVENTIONS.md` 와 동일):
+담당 예시 (`CONVENTIONS.md` §1 · 플로우차트 v2):
 
-| 담당 | 브랜치 이름 |
-|------|-------------|
-| 서버 전체 | `feature/backend-server` |
-| Stage 0 | `feature/stage0-extract` |
-| Stage 1 | `feature/stage1-evidence` |
-| Stage 3 | `feature/stage3-classify` |
-| 프론트 | `feature/frontend` |
+| 담당 | 브랜치 | Stage |
+|------|--------|:-----:|
+| 서버 통합 | `feature/backend-server` | Pre |
+| 김준엽 | `feature/frontend-upload`, `feature/stage1-extract` | 업로드, 1 |
+| 정건우 | `feature/stage2-ocr`, `feature/stage3-rule` | 2, 3 |
+| 천승원 | `feature/stage4-embedding`, `feature/stage6-cluster` | 4, 6 |
+| 이세연 | `feature/stage5-llm-local`, `feature/stage5-llm-claude` | 5 |
+| 정윤서 | `feature/stage7-review` | 7 |
 
 **본인 브랜치가 뭔지** 팀 리더에게 꼭 확인.
 
@@ -310,12 +311,13 @@ uvicorn main:app --reload
 - [ ] 본인 `feature/...` 브랜치 checkout
 - [ ] 테스트 commit 1개 + push + PR 연습 (문서 한 줄 수정도 OK)
 
-### Stage 담당 (pipeline 수정)
+### 파이프라인 담당 (pipeline 수정)
 
-- [ ] `server/models/schemas.py` 에서 입출력 구조 확인
-- [ ] 본인 `stageN_*.py` 만 수정 (다른 stage 파일 건드리지 않기)
-- [ ] `run()` 시그니처 변경 시 **서버 담당자에게 먼저** 공지
-- [ ] 로컬에서 `cd server` → `uvicorn main:app --reload` 로 동작 확인
+- [ ] `rules/CONVENTIONS.md` §10 파이프라인 순서·본인 브랜치 확인
+- [ ] `server/models/schemas.py` 입출력 구조 확인
+- [ ] **본인 담당 파일만** 수정 (예: 이세연 → `stage3_llm_claude.py` 만)
+- [ ] `run()` / `classify_with_*` 시그니처 변경 시 **서버 담당자에게 먼저** 공지
+- [ ] `cd server` → `uvicorn main:app --reload` 로 동작 확인
 
 ### 프론트엔드 담당
 
@@ -408,3 +410,45 @@ git merge main
 ① `main`에 직접 push 금지  
 ② `.env` 절대 commit 금지  
 ③ 작업은 **본인 `feature/` 브랜치**에서만
+
+---
+
+## 15. PR과 Gemini (코드 컨벤션 자동 리뷰)
+
+PR을 올리면 AI가 `rules/CONVENTIONS.md` 기준으로 리뷰하게 하려면 **Gemini Code Assist** GitHub 앱을 씁니다.
+
+### 15-1. 팀 리더 1회 설정
+
+1. https://github.com/marketplace/gemini-code-assist → **Install**
+2. 조직/계정 `junyeop10` 저장소 `-` 선택 → Install
+3. Google 계정으로 로그인·권한 허용
+
+### 15-2. 저장소에 이미 있는 파일 (커밋 필요)
+
+| 파일 | 역할 |
+|------|------|
+| `.gemini/styleguide.md` | 리뷰 시 지킬 컨벤션 (CONVENTIONS 요약) |
+| `.gemini/config.yaml` | 리뷰 on/off, 무시할 경로 (`.env`, `uploads/` 등) |
+
+`main`에 merge 된 뒤부터 새 PR에 자동 적용됩니다.
+
+### 15-3. PR에서 쓰는 법
+
+| 하고 싶은 일 | 방법 |
+|--------------|------|
+| PR 열면 자동 리뷰 | 기본 (5분 내 코멘트) |
+| 다시 리뷰 요청 | PR 댓글에 `/gemini review` |
+| 요약만 | `/gemini summary` |
+| 질문 | `@gemini-code-assist 이 부분 왜 그래요?` |
+
+제안된 코드는 GitHub에서 **Commit suggestion** 으로 반영 가능 (초보자는 리뷰어랑 상의 후 적용).
+
+### 15-4. PR 올리기 전 (로컬, 선택)
+
+Cursor에서 Gemini 모델 선택 → `rules/CONVENTIONS.md` 첨부 후 “이 diff 컨벤션 맞는지 봐줘” (GitHub 없이 미리 검사).
+
+### 15-5. 주의
+
+- 무료 tier: PR 리뷰 **하루 약 33건** 제한 (팀 규모 참고)
+- Gemini가 **코드를 직접 고쳐 merge 하지는 않음** — 코멘트·제안만 (최종은 사람이 merge)
+- `.gemini/` 설정 변경도 PR로 올려야 반영됨
