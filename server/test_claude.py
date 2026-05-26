@@ -1,4 +1,4 @@
-"""stage3_llm_claude 모듈 동작 확인 (더미 EvidencePackage)."""
+"""stage5_llm_claude 모듈 동작 확인 (더미 EvidencePackage)."""
 
 import asyncio
 import os
@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from models.schemas import EvidencePackage
-from pipeline.stage3_llm_claude import (
+from pipeline.stage5_llm_claude import (
     _build_user_prompt,
     classify_with_claude,
 )

@@ -146,8 +146,8 @@ def _embedding_classify(
 
 
 async def _call_llm(evidence: EvidencePackage) -> dict | None:
-    """Claude LLM 분류 (stage3_llm_claude 모듈 위임)."""
-    from pipeline.stage3_llm_claude import classify_with_claude
+    """Claude LLM 분류 (stage5_llm_claude 모듈 위임)."""
+    from pipeline.stage5_llm_claude import classify_with_claude
 
     result = await classify_with_claude(evidence)
     if result.get("reason") in ("API 오류", "JSON 파싱 실패"):

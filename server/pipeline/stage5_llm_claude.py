@@ -1,4 +1,4 @@
-"""Stage 3 LLM 분류 — Claude API 연동 모듈."""
+"""Stage 5 LLM 분류 — Claude API 연동 모듈 (플로우차트 v2)."""
 
 import asyncio
 import json
