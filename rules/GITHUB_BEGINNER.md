@@ -94,16 +94,16 @@ git pull origin main
 | `main` | **완성본** 공용 책 | 직접 수정·push **금지** |
 | `feature/내파트` | **내 초안 노트** | 여기서만 작업 |
 
-담당 예시 (`CONVENTIONS.md` §1 과 동일):
+담당 예시 (`CONVENTIONS.md` §1 · 플로우차트 v2):
 
-| 담당 | 브랜치 이름 |
-|------|-------------|
-| 서버 통합 | `feature/backend-server` |
-| 김준엽 (업로드·추출) | `feature/frontend-upload`, `feature/stage0-extract` |
-| 정건우 (OCR·룰) | `feature/ocr-fallback`, `feature/rule-classify` |
-| 천승원 (의미·군집) | `feature/semantic-cluster` |
-| 이세연 (LLM) | `feature/llm-local-qwen`, `feature/llm-claude` |
-| 정윤서 (검토 UI) | `feature/review-ui` |
+| 담당 | 브랜치 | Stage |
+|------|--------|:-----:|
+| 서버 통합 | `feature/backend-server` | Pre |
+| 김준엽 | `feature/frontend-upload`, `feature/stage1-extract` | 업로드, 1 |
+| 정건우 | `feature/stage2-ocr`, `feature/stage3-rule` | 2, 3 |
+| 천승원 | `feature/stage4-embedding`, `feature/stage6-cluster` | 4, 6 |
+| 이세연 | `feature/stage5-llm-local`, `feature/stage5-llm-claude` | 5 |
+| 정윤서 | `feature/stage7-review` | 7 |
 
 **본인 브랜치가 뭔지** 팀 리더에게 꼭 확인.
 
