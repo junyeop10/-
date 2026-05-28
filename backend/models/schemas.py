@@ -61,6 +61,6 @@ class ClassifyResult:
     confidence: float
     reason: str
     keywords: list[str]
-    classify_method: str  # 'rule' / 'embedding' / 'llm_local' / 'llm_api' / 'review_queue'
+    classify_method: str  # 'rule' / 'embedding' / 'local_llm' / 'claude_api' / 'review_queue'
     version_hint: str = ""
     review_reason: str = ""

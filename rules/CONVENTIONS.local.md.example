@@ -1,0 +1,27 @@
+# 개인 작업 메모 (로컬 전용)
+
+> 이 파일을 `CONVENTIONS.local.md`로 복사해 사용하세요. **Git에 커밋하지 마세요.**
+
+## 내 담당
+
+- 이름:
+- 브랜치: `feature/`
+- Stage:
+
+## 로컬 실행 (백엔드)
+
+- [ ] `cd backend`
+- [ ] `.env` 설정됨
+- [ ] `ollama serve` / 모델 pull
+- [ ] `uvicorn main:app --reload`
+
+## PR 올리기 전 (개인 체크)
+
+- [ ] `feature/` 브랜치에서 작업함
+- [ ] `.env` / `uploads/` / `cache.db` 스테이징 안 함
+- [ ] 팀 [CONVENTIONS.md](./CONVENTIONS.md) 커밋 형식 준수
+- [ ] 담당 파일만 수정함 (타 Stage 파일 손대지 않음)
+
+## 메모
+
+- 

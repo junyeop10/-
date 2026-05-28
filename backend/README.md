@@ -4,17 +4,17 @@
 
 | 상황 | 명령 |
 |------|------|
-| **매번 테스트할 때** | `cd server` → `uvicorn main:app --reload` |
+| **매번 테스트할 때** | `cd backend` → `uvicorn main:app --reload` |
 | **최초 1회만** | 의존성 설치 + `.env` 설정 + `python-multipart` 설치 |
 
-`uvicorn` 한 줄만으로 되려면 **이미 설치·설정이 끝난 상태**이고, **`server` 폴더에서** 실행해야 합니다.
+`uvicorn` 한 줄만으로 되려면 **이미 설치·설정이 끝난 상태**이고, **`backend` 폴더에서** 실행해야 합니다.
 
 ---
 
 ## 1. 최초 1회 설정
 
 ```powershell
-cd C:\-\server
+cd C:\-\backend
 
 pip install -r requirements.txt
 pip install python-multipart
@@ -47,7 +47,7 @@ python test_claude.py
 ## 2. 서버 실행 (이후 테스트마다)
 
 ```powershell
-cd C:\-\server
+cd C:\-\backend
 uvicorn main:app --reload
 ```
 
@@ -140,7 +140,7 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));
 | `pip install -r requirements.txt` | 최초 1회 / 패키지 추가 시 |
 | `pip install python-multipart` | 최초 1회 (파일 업로드 필수) |
 | `.env` 설정 | 최초 1회 + API 키 변경 시 |
-| `uvicorn main:app --reload` | **매번** (server 폴더에서) |
+| `uvicorn main:app --reload` | **매번** (backend 폴더에서) |
 
 **다른 명령은 평소 테스트에 필수 아님.**
 
@@ -157,13 +157,13 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));
 | LLM 분류 안 됨 | API 키·Ollama 미실행 | `ANTHROPIC_API_KEY` 또는 `ollama serve` 확인 |
 | `classify_method: llm_local` 없음 | Qwen 실패 후 Claude만 사용 | Ollama 모델 pull·`.env`의 `OLLAMA_MODEL` 확인 |
 | Ollama 500 / `unable to allocate` | RAM 부족으로 모델 로딩 실패 | 다른 앱 종료 또는 `ollama pull qwen2.5:0.5b` 후 `.env`에 `OLLAMA_MODEL=qwen2.5:0.5b` |
-| `requirements.txt` 없음 | `server` 폴더 안에서 `server\requirements.txt` 실행 | `cd server` 후 `pip install -r requirements.txt` |
+| `requirements.txt` 없음 | `backend` 폴더 안에서 `backend\requirements.txt` 실행 | `cd backend` 후 `pip install -r requirements.txt` |
 
 ---
 
 ## 6. 팀 키워드 설정 (JSON)
 
-룰 분류에 쓰는 키워드는 **`server/config/keywords.json`** 에 있습니다.
+룰 분류에 쓰는 키워드는 **`backend/config/keywords.json`** 에 있습니다.
 
 | 파일 | 역할 |
 |------|------|
@@ -189,7 +189,7 @@ keywords.json  →  loader.py (서버 시작 시 load)  →  stage3_rule (파일
 ## 7. 프로젝트 구조 (참고)
 
 ```
-server/
+backend/
 ├── main.py              # FastAPI 앱, 엔드포인트 4개
 ├── config/
 │   ├── keywords.json    # 팀 키워드 (여기 수정)

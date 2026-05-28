@@ -30,6 +30,16 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 app = FastAPI(title="AI 파일 분류 시스템")
 
+
+@app.on_event("startup")
+async def startup() -> None:
+    """Ollama 가용 여부를 서버 시작 시 1회만 확인."""
+    import pipeline.stage3_classify as s3
+
+    s3._ollama_available = await s3.check_ollama()
+    print(f"Ollama 사용 가능: {s3._ollama_available}")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -285,7 +295,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 job_id,
                 {
                     "stage": "external_api"
-                    if result.classify_method == "llm_api"
+                    if result.classify_method == "claude_api"
                     else "local_llm",
                     "progress": progress,
                     "current_file": filename,

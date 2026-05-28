@@ -73,7 +73,7 @@ git clone https://github.com/팀계정/저장소이름.git
 cd 저장소이름
 ```
 
-clone 후 폴더 안에 `server/`, `rules/` 등이 보이면 성공.
+clone 후 폴더 안에 `backend/`, `rules/` 등이 보이면 성공.
 
 ### 2-3. 이미 clone 해 둔 사람 — 최신 받기
 
@@ -165,9 +165,9 @@ git status
 
 **절대 올리면 안 되는 것**
 
-- `server/.env` (API 키)
-- `server/uploads/`
-- `server/cache.db`
+- `backend/.env` (API 키)
+- `backend/uploads/`
+- `backend/cache.db`
 - `__pycache__/`
 
 ```powershell
@@ -177,20 +177,20 @@ git status
 `.env`가 보이면:
 
 ```powershell
-git restore --staged server/.env
+git restore --staged backend/.env
 ```
 
-또는 add 하지 말 것. (`server/.gitignore`에 `.env` 있음)
+또는 add 하지 말 것. (`backend/.gitignore`에 `.env` 있음)
 
 ### 6-3. 명령어 예시
 
 ```powershell
-# server 폴더만 수정했을 때
-git add server/pipeline/stage0_extract.py
-git add server/requirements.txt
+# backend 폴더만 수정했을 때
+git add backend/pipeline/stage0_extract.py
+git add backend/requirements.txt
 
-# 또는 server 전체 ( .env 는 gitignore 로 제외됨 )
-git add server/
+# 또는 backend 전체 ( .env 는 gitignore 로 제외됨 )
+git add backend/
 
 # rules 문서만
 git add rules/
@@ -287,10 +287,10 @@ git push
 
 ```powershell
 # ❌
-cd server && uvicorn main:app
+cd backend && uvicorn main:app
 
 # ✅
-cd server
+cd backend
 uvicorn main:app --reload
 ```
 
@@ -313,11 +313,11 @@ uvicorn main:app --reload
 
 ### 파이프라인 담당 (pipeline 수정)
 
-- [ ] `rules/CONVENTIONS.md` §10 파이프라인 순서·본인 브랜치 확인
-- [ ] `server/models/schemas.py` 입출력 구조 확인
+- [ ] `rules/CONVENTIONS.md` §4 파이프라인·본인 브랜치 확인
+- [ ] `backend/models/schemas.py` 입출력 구조 확인
 - [ ] **본인 담당 파일만** 수정 (예: 이세연 → `stage3_llm_claude.py` 만)
 - [ ] `run()` / `classify_with_*` 시그니처 변경 시 **서버 담당자에게 먼저** 공지
-- [ ] `cd server` → `uvicorn main:app --reload` 로 동작 확인
+- [ ] `cd backend` → `uvicorn main:app --reload` 로 동작 확인
 
 ### 프론트엔드 담당
 
@@ -381,8 +381,8 @@ git log -3 --oneline
 | 문서 | 내용 |
 |------|------|
 | [`rules/CONVENTIONS.md`](./CONVENTIONS.md) | 브랜치, 커밋, 코드 스타일 |
-| [`server/README.md`](../server/README.md) | 서버 실행·API 테스트 |
-| [`server/docs/team-meeting-template.md`](../server/docs/team-meeting-template.md) | 키워드·룰 회의 템플릿 |
+| [`backend/README.md`](../backend/README.md) | 서버 실행·API 테스트 |
+| [`backend/docs/CONVENTIONS.md`](../backend/docs/CONVENTIONS.md) | 백엔드 Stage·API 상세 |
 
 ---
 
@@ -395,7 +395,7 @@ git checkout feature/본인브랜치
 
 # === 작업 후 매번 ===
 git status
-git add server/경로/파일.py
+git add backend/경로/파일.py
 git commit -m "feat: 작업 내용 한 줄"
 git push origin feature/본인브랜치
 
