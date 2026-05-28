@@ -150,7 +150,7 @@ project-root/
 | Stage | 단계 | 목표 파일 | 담당 |
 |:-----:|------|-----------|------|
 | — | Pre (캐시·검증) | `pre_stage.py` | 서버 |
-| 1 | 텍스트 추출 | `stage1_extract.py` | 김준엽 — PDF/HWP/DOCX/TXT, 1500×3 |
+| 1 | 텍스트 추출 | `stage0_extract.py` (향후 `stage1_extract.py` 예정) | 김준엽 — PDF/HWP/DOCX/TXT, 1500×3 |
 | 2 | OCR·전처리 | `stage2_ocr.py` | 정건우 — 이미지·스캔 PDF, 노이즈 제거 |
 | 3 | 키워드·룰 1차 분류 | `stage3_rule.py` | 정건우 — 키워드·**파일명 규칙**, ppt/pptx |
 | 4 | 임베딩·벡터화 | `stage4_embedding.py` | 천승원 — Sentence-BERT 등 |
@@ -231,7 +231,8 @@ def run(file_bytes: bytes, filename: str, ext: str) -> dict:
 
 ### 반환 status 값 통일
 
-파이프라인 함수의 반환 딕셔너리에서 `status` 값은 아래로 통일한다.
+파이프라인 함수의 **반환 딕셔너리**에서 `status` 값은 아래로 통일한다.  
+(`main.py` WebSocket 진행 이벤트의 `stage`/`status` 문자열은 UI 계약에 따라 별도 정의 가능)
 
 
 | status           | 의미                       |
@@ -433,9 +434,9 @@ flowchart TD
 | Stage | 파일 | 메인 함수 | 반환 |
 |:-----:|------|-----------|------|
 | Pre | `pre_stage.py` | `run(file_bytes, filename, modified_at)` | `dict` |
-| 1 | `stage1_extract.py` | `run(file_bytes, filename, ext)` | `dict` |
+| 1 | `stage0_extract.py` | `run(file_bytes, filename, ext)` | `dict` |
 | 2 | `stage2_ocr.py` | `run(file_bytes, filename, ext)` | `dict` |
-| 3 | `stage3_rule.py` | `run(filename, ext, extract_result, ...)` | `ClassifyResult \| None` |
+| 3 | `stage3_rule.py` | `run(filename, ext, xxhash, version_hint="")` | `ClassifyResult \| None` |
 | 4 | `stage4_embedding.py` | `run(text_chunks, ...)` → `EvidencePackage` 조립 포함 가능 | `list[float]` / `EvidencePackage` |
 | 5 | `stage5_llm_local.py` | `async classify_with_qwen(pkg)` | `dict` |
 | 5 | `stage5_llm_claude.py` | `async classify_with_claude(pkg)` | `dict` |

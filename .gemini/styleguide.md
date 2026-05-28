@@ -14,7 +14,8 @@
 - 메인 진입 함수 이름은 **`run()`** 으로 통일
 - 함수 시그니처 변경 시 `main.py` 호출부와 팀에 영향 — 리뷰에서 지적
 - 예외는 삼키고 `status: "failed"` 또는 검토 큐로 반환 (서버 전체 크래시 금지)
-- `status` 값: `ok`, `success`, `ocr_fallback`, `cached`, `failed`, `review_queue` 만 사용
+- stage 함수 반환 `status` 값은 `ok`, `success`, `ocr_fallback`, `cached`, `failed`, `review_queue`만 사용
+- `main.py` WebSocket 진행 이벤트의 `stage`/`status` 값은 프론트 계약에 맞춰 별도 운영 가능
 
 ## 데이터 구조
 

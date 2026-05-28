@@ -1,4 +1,3 @@
-import asyncio
 import os
 from pathlib import Path
 
@@ -7,6 +6,8 @@ from dotenv import load_dotenv
 
 from models.schemas import Category, ClassifyResult, EvidencePackage
 from config.loader import BASE_KEYWORDS
+from pipeline.stage5_llm_claude import classify_with_claude
+from pipeline.stage5_llm_local import classify_with_qwen
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -147,29 +148,43 @@ def _embedding_classify(
 
 LLM_MIN_CONFIDENCE = float(os.getenv("LLM_MIN_CONFIDENCE", "0.60"))
 _LLM_FAILURE_REASONS = frozenset(
-    {"API 오류", "JSON 파싱 실패", "Ollama 미연결"}
+    {
+        "API 오류",
+        "JSON 파싱 실패",
+        "Ollama 미연결",
+        "Ollama 서버 오류",
+        "타임아웃 초과",
+        "메모리 부족 — qwen2.5:0.5b 등 더 작은 모델 권장",
+    }
 )
+
+
+def _is_llm_failure(llm_data: dict | None) -> bool:
+    if not llm_data:
+        return True
+    if llm_data.get("reason") in _LLM_FAILURE_REASONS:
+        return True
+    if llm_data.get("category") == Category.UNCLASSIFIED.value and float(
+        llm_data.get("confidence", 0)
+    ) <= 0:
+        return True
+    return False
 
 
 async def _call_llm(evidence: EvidencePackage) -> tuple[dict | None, str]:
     """
-    Qwen(Ollama) 우선, 실패·저신뢰 시 Claude 폴백.
+    로컬 LLM(Qwen/Ollama) 우선 호출 후 실패 시 Claude API로 폴백합니다.
 
-    반환: (llm_data 또는 None, classify_method: llm_local | llm)
+    반환: (llm_data 또는 None, classify_method: llm_local | llm_api)
     """
-    from pipeline.stage5_llm_claude import classify_with_claude
-    from pipeline.stage5_llm_local import classify_with_qwen
+    local_data = await classify_with_qwen(evidence)
+    if not _is_llm_failure(local_data):
+        return local_data, "llm_local"
 
-    local = await classify_with_qwen(evidence)
-    if local.get("reason") not in _LLM_FAILURE_REASONS:
-        conf = float(local.get("confidence", 0))
-        if conf >= LLM_MIN_CONFIDENCE and local.get("category") != "분류불가":
-            return local, "llm_local"
-
-    cloud = await classify_with_claude(evidence)
-    if cloud.get("reason") in _LLM_FAILURE_REASONS:
-        return None, "llm"
-    return cloud, "llm"
+    api_data = await classify_with_claude(evidence)
+    if _is_llm_failure(api_data):
+        return None, "llm_api"
+    return api_data, "llm_api"
 
 
 def _review_queue_result(

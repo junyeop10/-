@@ -154,7 +154,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage1_extract",
+                    "stage": "text_extract",
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
@@ -162,15 +162,16 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             )
             extract_result = stage0_extract.run(file_bytes, filename, ext)
 
-            await broadcast(
-                job_id,
-                {
-                    "stage": "stage2_ocr",
-                    "progress": progress,
-                    "current_file": filename,
-                    "status": "running",
-                },
-            )
+            if extract_result["status"] == "failed":
+                await broadcast(
+                    job_id,
+                    {
+                        "stage": "ocr_fallback",
+                        "progress": progress,
+                        "current_file": filename,
+                        "status": "running",
+                    },
+                )
             extract_result = stage2_ocr.run(
                 file_bytes, filename, ext, extract_result
             )
@@ -185,7 +186,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 await broadcast(
                     job_id,
                     {
-                        "stage": "stage2_ocr",
+                        "stage": "ocr_fallback",
                         "progress": progress,
                         "current_file": filename,
                         "status": "review_queue",
@@ -196,7 +197,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage3_rule",
+                    "stage": "evidence_package",
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
@@ -212,10 +213,10 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 await broadcast(
                     job_id,
                     {
-                        "stage": "stage3_rule",
+                        "stage": "evidence_package",
                         "progress": progress,
                         "current_file": filename,
-                        "status": "rule",
+                        "status": "filename_rule",
                     },
                 )
                 continue
@@ -223,7 +224,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage4_embedding",
+                    "stage": "evidence_package",
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
@@ -246,7 +247,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage5_llm",
+                    "stage": "local_llm",
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
@@ -272,7 +273,9 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "stage5_llm",
+                    "stage": "external_api"
+                    if result.classify_method == "llm_api"
+                    else "local_llm",
                     "progress": progress,
                     "current_file": filename,
                     "status": result.classify_method,
@@ -295,7 +298,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     await broadcast(
         job_id,
         {
-            "stage": "stage6_cluster",
+            "stage": "cluster_hdbscan",
             "progress": f"{total}/{total}",
             "current_file": "",
             "status": "running",
@@ -306,7 +309,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     await broadcast(
         job_id,
         {
-            "stage": "stage4_version",
+            "stage": "version_organize",
             "progress": f"{total}/{total}",
             "current_file": "",
             "status": "running",
@@ -317,6 +320,16 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     stage4_version.clear_embeddings()
 
     reviewed = stage7_review.run(results, review_queue, clusters)
+
+    await broadcast(
+        job_id,
+        {
+            "stage": "feedback_learning",
+            "progress": f"{total}/{total}",
+            "current_file": "",
+            "status": "ready",
+        },
+    )
 
     _job_results[job_id] = {
         "status": "completed",
@@ -329,7 +342,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     await broadcast(
         job_id,
         {
-            "stage": "complete",
+            "stage": "folder_complete",
             "progress": f"{total}/{total}",
             "current_file": "",
             "status": "completed",
