@@ -48,8 +48,11 @@ def failure_result(reason: str) -> dict:
     }
 
 
+MAX_LLM_PROMPT_CHARS = 4000
+
+
 def build_user_prompt(pkg: EvidencePackage) -> str:
-    """EvidencePackage를 유저 프롬프트 문자열로 변환 (텍스트 4500자 예산)."""
+    """EvidencePackage를 유저 프롬프트 문자열로 변환."""
     return f"""다음 파일을 분류하세요.
 
 파일명: {pkg.filename}
@@ -70,6 +73,22 @@ text_middle:
 text_rear:
 {pkg.text_rear}
 """
+
+
+def build_generate_prompt(
+    pkg: EvidencePackage, max_total_chars: int = MAX_LLM_PROMPT_CHARS
+) -> str:
+    """
+    Ollama /api/generate용 단일 프롬프트 (시스템+유저 합쳐 max_total_chars 이하).
+
+    Claude와 동일한 시스템·유저 구조이며, CPU 환경 토큰 예산(약 4000자)을 넘지 않도록 잘립니다.
+    """
+    user = build_user_prompt(pkg)
+    overhead = len(SYSTEM_PROMPT) + len("\n\n") + 16
+    user_max = max(0, max_total_chars - overhead)
+    if len(user) > user_max:
+        user = user[:user_max] + "\n...(생략)"
+    return f"{SYSTEM_PROMPT}\n\n{user}"
 
 
 def parse_response_text(text: str) -> dict | None:

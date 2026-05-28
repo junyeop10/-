@@ -41,6 +41,7 @@ app.add_middleware(
 UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
+# job_id별 WebSocket·결과·임베딩 (메모리, 서버 재시작 시 소멸)
 _connections: dict[str, list[WebSocket]] = {}
 _job_results: dict[str, dict] = {}
 _job_embeddings: dict[str, dict[str, list[float]]] = {}
@@ -74,10 +75,16 @@ async def broadcast(job_id: str, message: dict) -> None:
 
 
 async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
+    """
+    파일별 분류 파이프라인 (v2).
+
+    Pre → 추출 → (OCR) → 룰 → 임베딩·LLM → job 단위 군집·버전 정리 → 검토 큐 반영.
+    진행 상태는 WebSocket `stage` 키로 broadcast (CONVENTIONS.md §10-6).
+    """
     total = len(files_info)
     results: list[ClassifyResult] = []
     review_queue: list[dict] = []
-    cluster_job_items: list[dict] = []
+    cluster_job_items: list[dict] = []  # HDBSCAN 입력 (임베딩 있는 파일만)
     feedback_embeddings = stage6_feedback.get_feedback_embeddings()
 
     for idx, info in enumerate(files_info, start=1):
@@ -103,6 +110,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 },
             )
 
+            # Pre: 확장자·용량 검사, xxhash 캐시 조회
             pre_result = pre_stage.run(file_bytes, filename, modified_at)
 
             if pre_result["status"] == "review_queue":
@@ -121,7 +129,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 )
                 continue
 
-            if pre_result["status"] == "cached":
+            if pre_result["status"] == "cached":  # 동일 파일 재업로드 시 LLM 생략
                 cached = pre_result["cached_result"]
                 try:
                     category = Category(cached["category"])
@@ -160,6 +168,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                     "status": "running",
                 },
             )
+            # 텍스트 추출 → 실패 시 OCR 폴백
             extract_result = stage0_extract.run(file_bytes, filename, ext)
 
             if extract_result["status"] == "failed":
@@ -176,7 +185,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 file_bytes, filename, ext, extract_result
             )
 
-            if extract_result["status"] == "failed":
+            if extract_result["status"] == "failed":  # OCR까지 실패 → 검토 큐
                 review_queue.append(
                     {
                         "filename": filename,
@@ -203,6 +212,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                     "status": "running",
                 },
             )
+            # 파일명 룰로 확정되면 임베딩·LLM 생략
             rule_result = stage3_rule.run(filename, ext, xxhash)
             if rule_result is not None:
                 rule_result.file_path = file_path
@@ -230,6 +240,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                     "status": "running",
                 },
             )
+            # 증거 패키지(임베딩·키워드) 구성 후 LLM 분류 (Qwen → Claude 폴백)
             evidence = stage4_embedding.run(
                 file_bytes, filename, ext, size_kb, modified_at, xxhash, extract_result
             )
@@ -261,7 +272,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                     xxhash, result.category.value, result.confidence
                 )
                 results.append(result)
-            else:
+            else:  # LLM 실패·저신뢰
                 review_queue.append(
                     {
                         "filename": filename,
@@ -295,6 +306,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 },
             )
 
+    # job 전체: 유사 문서 군집 → 버전 그룹 → 결과 정리
     await broadcast(
         job_id,
         {
@@ -321,6 +333,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
 
     reviewed = stage7_review.run(results, review_queue, clusters)
 
+    # 확정·학습은 POST /confirm 에서 처리 (여기서는 UI용 ready 이벤트만)
     await broadcast(
         job_id,
         {
@@ -375,6 +388,7 @@ async def upload(
     background_tasks: BackgroundTasks,
     files: Annotated[list[UploadFile], File()],
 ):
+    """파일 저장 후 job_id 반환, 파이프라인은 백그라운드 실행."""
     job_id = str(uuid.uuid4())
     job_dir = UPLOAD_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -422,6 +436,7 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
 
 @app.post("/confirm/{job_id}")
 async def confirm(job_id: str, body: dict):
+    """사용자 수정을 피드백 DB에 저장 (다음 분류 시 임베딩 유사도에 반영)."""
     corrections = body.get("corrections", [])
     job_data = _job_results.get(job_id, {})
     if not job_data:

@@ -27,7 +27,7 @@ copy .env.example .env
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:3b
+OLLAMA_MODEL=qwen2.5:0.5b
 MAX_CONCURRENT_LLM=5
 LLM_MIN_CONFIDENCE=0.60
 MAX_FILE_SIZE_MB=50
@@ -156,6 +156,8 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));
 | WebSocket 메시지 없음 | 업로드 **후** 연결 | 업로드 **전** WebSocket 연결 |
 | LLM 분류 안 됨 | API 키·Ollama 미실행 | `ANTHROPIC_API_KEY` 또는 `ollama serve` 확인 |
 | `classify_method: llm_local` 없음 | Qwen 실패 후 Claude만 사용 | Ollama 모델 pull·`.env`의 `OLLAMA_MODEL` 확인 |
+| Ollama 500 / `unable to allocate` | RAM 부족으로 모델 로딩 실패 | 다른 앱 종료 또는 `ollama pull qwen2.5:0.5b` 후 `.env`에 `OLLAMA_MODEL=qwen2.5:0.5b` |
+| `requirements.txt` 없음 | `server` 폴더 안에서 `server\requirements.txt` 실행 | `cd server` 후 `pip install -r requirements.txt` |
 
 ---
 

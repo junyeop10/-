@@ -1,6 +1,8 @@
 """Ollama Qwen 분류 스모크 테스트 (Ollama 실행 필요)."""
 
 import asyncio
+import json
+import sys
 
 from models.schemas import EvidencePackage
 from pipeline.stage5_llm_local import classify_with_qwen
@@ -25,7 +27,10 @@ async def main() -> None:
         extract_status="ok",
     )
     result = await classify_with_qwen(pkg)
-    print(result)
+    # Windows cp949 콘솔에서 한자 등 출력 오류 방지
+    sys.stdout.buffer.write(
+        (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8")
+    )
 
 
 if __name__ == "__main__":
