@@ -215,6 +215,7 @@ git push origin feature/stage0-extract
 ## 7. Pull Request (PR) — 팀에 “합쳐 주세요” 요청
 
 `main`에 직접 push 하지 않고, **PR**로 합칩니다.
+PR 제목/본문/체크리스트 형식은 [`pr-convention.md`](./pr-convention.md)를 따릅니다.
 
 ### 7-1. 웹에서 PR 만들기 (가장 쉬움)
 
@@ -228,6 +229,7 @@ git push origin feature/stage0-extract
 
 ### 7-2. PR 전 스스로 체크
 
+- [ ] PR 제목/본문이 `rules/pr-convention.md` 형식인가
 - [ ] `feature/` 브랜치에서 push 했는가
 - [ ] `.env` 안 올렸는가
 - [ ] `requirements.txt` 바꿨으면 같이 commit 했는가
@@ -381,6 +383,7 @@ git log -3 --oneline
 | 문서 | 내용 |
 |------|------|
 | [`rules/CONVENTIONS.md`](./CONVENTIONS.md) | 브랜치, 커밋, 코드 스타일 |
+| [`rules/pr-convention.md`](./pr-convention.md) | PR 제목/본문/체크리스트 규칙 |
 | [`backend/README.md`](../backend/README.md) | 서버 실행·API 테스트 |
 | [`backend/docs/CONVENTIONS.md`](../backend/docs/CONVENTIONS.md) | 백엔드 Stage·API 상세 |
 
