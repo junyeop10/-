@@ -345,7 +345,7 @@ http://localhost:8000/docs
 
 ## 10. 최종 파이프라인 (플로우차트 v2)
 
-`main.py` `run_pipeline` 은 **Stage 1 → 7** 순서로 호출한다.
+`main.py` `run_pipeline`은 Pre 검사 후 **추출 → (필요 시 OCR) → 룰 → 임베딩 패키지 → 로컬 LLM → (필요 시 외부 API) → 군집 → 버전 정리 → 검토 큐 반영** 순서로 진행한다.
 
 ### 10-1. Stage별 요약 (공식 플로우차트)
 
@@ -361,26 +361,28 @@ http://localhost:8000/docs
 | **7** | 최종 분류·검토 | 정윤서 | LLM+군집 종합, 신뢰도·UI |
 | **8** | 피드백·학습 | (후속) | 오분류 수정·학습 — **중간 발표 제외** |
 
-### 10-2. 전체 플로우 (mermaid)
+### 10-2. 전체 플로우 (mermaid, 현재 `main.py` 기준)
 
 ```mermaid
 flowchart TD
-    U[파일 업로드<br/>김준엽] --> S1[Stage1 텍스트 추출<br/>김준엽]
-    S1 --> S2{추출 실패·이미지?}
-    S2 -->|예| S2O[Stage2 OCR·전처리<br/>정건우]
-    S2 -->|아니오| S3[Stage3 키워드·룰<br/>정건우]
-    S2O --> S3
-    S3 --> S3OK{1차 분류 확정?}
-    S3OK -->|예| S7
-    S3OK -->|아니오| S4[Stage4 임베딩<br/>천승원]
-    S4 --> S5L[Stage5 로컬 LLM qwen<br/>이세연]
-    S5L --> S5C{필요 시}
-    S5C -->|예| S5A[Stage5 Claude API<br/>이세연]
-    S5C -->|아니오| S6
-    S5A --> S6[Stage6 HDBSCAN 군집<br/>천승원]
-    S6 --> S7[Stage7 최종 분류·검토<br/>정윤서]
-    S7 --> END[분류 완료]
-    S7 -.->|Stage8| S8[피드백·학습<br/>중간발표 제외]
+    U[파일 업로드] --> P[Pre: 유효성/캐시]
+    P -->|캐시 히트| END[folder_complete]
+    P -->|미캐시| E[text_extract]
+    E --> O{추출 실패?}
+    O -->|예| OF[ocr_fallback]
+    O -->|아니오| R[파일명 룰 분류]
+    OF --> R
+    R --> RK{룰 확정?}
+    RK -->|예| C[cluster_hdbscan]
+    RK -->|아니오| EP[evidence_package]
+    EP --> L[local_llm (Qwen)]
+    L --> LF{실패/저신뢰?}
+    LF -->|예| A[external_api (Claude)]
+    LF -->|아니오| C
+    A --> C
+    C --> V[version_organize]
+    V --> F[feedback_learning (ready 이벤트)]
+    F --> END
 ```
 
 ### 10-3. Stage 5 LLM (이세연) — 동작 원칙
@@ -410,7 +412,22 @@ flowchart TD
 | 5 LLM | `stage5_llm_claude` ✅ / `stage5_llm_local` ✅ (Qwen→Claude) |
 | 6 군집 | `stage6_cluster.py` (HDBSCAN) ✅ |
 | 7 검토 | `stage7_review.py` + API ✅ |
-| 순서 | ✅ `main.py`: 추출→OCR→룰→임베딩→LLM→군집→버전→검토 |
+| 순서 | ✅ `main.py`: Pre→추출→(필요 시 OCR)→룰→임베딩 패키지→로컬 LLM→(필요 시 외부 API)→군집→버전→검토 |
+
+### 10-6. WebSocket 진행 이벤트 키(`stage`)
+
+프론트 진행 표시에서 사용하는 `stage` 값은 현재 아래와 같이 고정한다.
+
+- `pre_stage`
+- `text_extract`
+- `ocr_fallback`
+- `evidence_package`
+- `local_llm`
+- `external_api`
+- `cluster_hdbscan`
+- `version_organize`
+- `feedback_learning`
+- `folder_complete`
 
 
 ---
