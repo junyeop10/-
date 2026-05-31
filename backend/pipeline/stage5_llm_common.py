@@ -35,6 +35,7 @@ SYSTEM_PROMPT = f"""당신은 기업 문서 파일 분류 전문가입니다.
 
 category는 반드시 다음 중 하나: {", ".join(CATEGORIES)}
 confidence는 0.0~1.0 사이 숫자입니다.
+reason과 keywords는 반드시 한국어로만 작성하세요. 중국어·영어 사용 금지.
 """
 
 

@@ -1,5 +1,6 @@
 """Stage 3 — 키워드·룰 1차 분류 (파일명 키워드만)."""
 
+import os
 from pathlib import Path
 
 from config.loader import BASE_KEYWORDS
@@ -14,7 +15,9 @@ CATEGORY_NAME_MAP = {
     "작업중": Category.DRAFT,
 }
 
-RULE_MIN_CONFIDENCE = 0.80
+# 파일명 1~2개 키워드만으로도 1차 확정이 가능하도록 기본 임계값을 낮춤.
+# 필요 시 환경변수로 조정 가능: RULE_MIN_CONFIDENCE=0.25
+RULE_MIN_CONFIDENCE = float(os.getenv("RULE_MIN_CONFIDENCE", "0.25"))
 PPT_EXTENSIONS = {".ppt", ".pptx"}
 
 
@@ -74,10 +77,15 @@ def run(
 
         best_cat = max(counts, key=counts.get)
         match_count = counts[best_cat]
-        total = sum(
-            len(v) for k, v in BASE_KEYWORDS.items() if k in CATEGORY_NAME_MAP
+        # 기존 global 분모(전체 키워드 수) 대신, 카테고리별 분모를 사용해
+        # 파일명 키워드 기반 confidence가 과도하게 낮아지는 문제를 완화.
+        best_cat_name = next(
+            (name for name, cat in CATEGORY_NAME_MAP.items() if cat == best_cat),
+            "",
         )
-        confidence = match_count / total if total else 0.0
+        best_cat_keywords = BASE_KEYWORDS.get(best_cat_name, [])
+        category_total = len(best_cat_keywords)
+        confidence = match_count / category_total if category_total else 0.0
 
         if confidence < RULE_MIN_CONFIDENCE:
             return None
