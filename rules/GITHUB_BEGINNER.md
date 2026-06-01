@@ -94,7 +94,7 @@ git pull origin main
 | `main` | **완성본** 공용 책 | 직접 수정·push **금지** |
 | `feature/내파트` | **내 초안 노트** | 여기서만 작업 |
 
-담당 예시 (`CONVENTIONS.md` §1 · 플로우차트 v2):
+담당 예시 (`CONVENTIONS.md` §1 · 플로우차트 최종):
 
 | 담당 | 브랜치 | Stage |
 |------|--------|:-----:|
@@ -102,7 +102,7 @@ git pull origin main
 | 김준엽 | `feature/frontend-upload`, `feature/stage1-extract` | 업로드, 1 |
 | 정건우 | `feature/stage2-ocr`, `feature/stage3-rule` | 2, 3 |
 | 천승원 | `feature/stage4-embedding`, `feature/stage6-cluster` | 4, 6 |
-| 이세연 | `feature/stage5-llm-local`, `feature/stage5-llm-claude` | 5 |
+| 이세연 | `feature/stage5-claude` | 5 |
 | 정윤서 | `feature/stage7-review` | 7 |
 
 **본인 브랜치가 뭔지** 팀 리더에게 꼭 확인.
@@ -317,7 +317,7 @@ uvicorn main:app --reload
 
 - [ ] `rules/CONVENTIONS.md` §4 파이프라인·본인 브랜치 확인
 - [ ] `backend/models/schemas.py` 입출력 구조 확인
-- [ ] **본인 담당 파일만** 수정 (예: 이세연 → `stage3_llm_claude.py` 만)
+- [ ] **본인 담당 파일만** 수정 (예: 이세연 → `stage5_claude.py` 만)
 - [ ] `run()` / `classify_with_*` 시그니처 변경 시 **서버 담당자에게 먼저** 공지
 - [ ] `cd backend` → `uvicorn main:app --reload` 로 동작 확인
 

@@ -9,6 +9,15 @@
 
 `uvicorn` 한 줄만으로 되려면 **이미 설치·설정이 끝난 상태**이고, **`backend` 폴더에서** 실행해야 합니다.
 
+### 파이프라인 (플로우차트 최종)
+
+1. **파일 업로드** → **사전처리** (캐시 히트 시 즉시 완료)
+2. **증거패키지 구성**: 텍스트 추출·OCR → 파일명 룰 → 임베딩 → 의미신호 → 의미 코어
+3. **Claude API** 카테고리 분류 (7종)
+4. 군집·버전 정리 → **검토큐** / **확정·학습** (`POST /confirm`) / **폴더 구조 완성**
+
+상세·mermaid: [rules/CONVENTIONS.md](../rules/CONVENTIONS.md) §4
+
 ---
 
 ## 1. 최초 1회 설정
@@ -22,30 +31,26 @@ pip install python-multipart
 copy .env.example .env
 ```
 
-`.env` 파일을 열어 키·Ollama 설정을 맞춥니다.
+`.env` 파일을 열어 API 키를 맞춥니다.
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:0.5b
 MAX_CONCURRENT_LLM=5
 LLM_MIN_CONFIDENCE=0.60
 MAX_FILE_SIZE_MB=50
 ```
 
-**로컬 Qwen (Stage 5):** [Ollama](https://ollama.com) 설치 후 `ollama pull qwen2.5:3b` 실행. 미실행 시 Claude API로 자동 폴백합니다.
+**Stage 5:** `ANTHROPIC_API_KEY` 로 **Claude API** 카테고리 분류.
 
 ```powershell
-# 단일 파일
-python test_qwen.py C:\samples\보고서.pdf
+# Claude API (운영과 동일 경로)
 python test_claude.py C:\samples\보고서.pdf
 
 # 여러 파일 또는 폴더(지원 확장자 전부)
-python test_qwen.py file1.docx file2.pdf
-python test_qwen.py C:\samples\
+python test_claude.py file1.docx file2.pdf
+python test_claude.py C:\samples\
 
-# 추출·증거만 확인 (LLM/API 호출 안 함)
-python test_qwen.py report.pdf --dry-run
+# 추출·증거만 확인 (API 호출 안 함)
 python test_claude.py report.pdf --dry-run
 ```
 
@@ -163,9 +168,8 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));
 | `python-multipart` 오류 | 미설치 | `pip install python-multipart` |
 | `results`가 비어 있음 | 텍스트 추출 실패 / 임베딩 오류 | PDF·docx로 테스트; NumPy 오류 시 룰·LLM만 동작 |
 | WebSocket 메시지 없음 | 업로드 **후** 연결 | 업로드 **전** WebSocket 연결 |
-| LLM 분류 안 됨 | API 키·Ollama 미실행 | `ANTHROPIC_API_KEY` 또는 `ollama serve` 확인 |
-| `classify_method: llm_local` 없음 | Qwen 실패 후 Claude만 사용 | Ollama 모델 pull·`.env`의 `OLLAMA_MODEL` 확인 |
-| Ollama 500 / `unable to allocate` | RAM 부족으로 모델 로딩 실패 | 다른 앱 종료 또는 `ollama pull qwen2.5:0.5b` 후 `.env`에 `OLLAMA_MODEL=qwen2.5:0.5b` |
+| LLM 분류 안 됨 | Claude API 키 없음/오류 | `.env`의 `ANTHROPIC_API_KEY` 확인 |
+| `classify_method: review_queue` | Claude 실패·저신뢰 | 본문 추출·`LLM_MIN_CONFIDENCE` 확인 |
 | `requirements.txt` 없음 | `backend` 폴더 안에서 `backend\requirements.txt` 실행 | `cd backend` 후 `pip install -r requirements.txt` |
 
 ---
@@ -203,9 +207,10 @@ backend/
 ├── config/
 │   ├── keywords.json    # 팀 키워드 (여기 수정)
 │   └── loader.py        # JSON → BASE_KEYWORDS
-├── pipeline/            # v2: extract→ocr→rule→embedding→llm→cluster→review
-│   ├── stage5_llm_local.py   # Qwen (Ollama)
-│   └── stage5_llm_claude.py    # Claude 폴백
+├── pipeline/            # 플로우차트 최종: 증거패키지 → Claude 분류 → 검토·폴더
+│   ├── stage5_classify.py      # Stage 5 run() — 임베딩·Claude 조율
+│   ├── stage5_claude.py        # Claude API 호출 (anthropic 단일 진입)
+│   └── stage5_common.py        # 프롬프트·JSON 파싱
 ├── models/schemas.py    # 데이터 모델
 ├── db/cache.py          # xxhash SQLite 캐시
 ├── uploads/             # 업로드 임시 저장 (git 제외)

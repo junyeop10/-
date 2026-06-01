@@ -19,8 +19,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from models.schemas import EvidencePackage
-from pipeline.stage5_llm_claude import classify_with_claude
-from pipeline.stage5_llm_common import build_user_prompt
+from pipeline.stage5_claude import classify_with_claude
+from pipeline.stage5_common import build_user_prompt
 from test_llm_helpers import build_evidence_from_path, iter_test_paths
 
 load_dotenv(Path(__file__).resolve().parent / ".env")

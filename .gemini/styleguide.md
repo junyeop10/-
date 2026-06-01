@@ -25,9 +25,8 @@
 ## 보안
 
 - `.env`, API 키 하드코딩 금지
-- `anthropic` 호출은 **`pipeline/stage5_llm_claude.py` 한 곳만**
-- 로컬 LLM(qwen)은 **`pipeline/stage5_llm_local.py` 한 곳만**
-- 파이프라인 순서: 플로우차트 v2 — Stage1~7 (`rules/CONVENTIONS.md` §4, 백엔드 상세 `backend/docs/CONVENTIONS.md`)
+- `anthropic` 호출은 **`pipeline/stage5_claude.py` 한 곳만**
+- 파이프라인 순서: 플로우차트 최종 — 증거패키지 → Claude API 분류 (`rules/CONVENTIONS.md` §4)
 
 ## 키워드·설정
 

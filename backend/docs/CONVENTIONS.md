@@ -25,7 +25,7 @@ backend/
 | 2 | `stage2_ocr.py` |
 | 3 | `stage3_rule.py` |
 | 4 | `stage4_embedding.py` |
-| 5 | `stage3_classify.py`, `stage5_llm_local.py`, `stage5_llm_claude.py` |
+| 5 | `stage5_classify.py`, `stage5_claude.py`, `stage5_common.py` |
 | 6 | `stage6_cluster.py` |
 | 7 | `stage7_review.py` |
 
@@ -118,10 +118,8 @@ def run(file_bytes: bytes, filename: str, ext: str) -> dict:
 
 - `.env` 파일은 **절대 깃에 올리지 않는다**
 - API 키는 코드에 직접 작성 금지
-- **Claude API** 호출은 `pipeline/stage5_llm_claude.py` 한 곳에서만 수행
+- **Claude API** 호출은 `pipeline/stage5_claude.py` 한 곳에서만 수행
 - 다른 모듈에서 `anthropic` 직접 import 금지
-- **로컬 LLM (qwen/Ollama)** 은 `pipeline/stage5_llm_local.py` (이세연) 에서만 호출
-
 ```python
 # ✅ 올바른 예 — .env에서 읽기
 import os
@@ -188,14 +186,27 @@ http://localhost:8000/docs
 
 ## 7. 파이프라인 구현 상세
 
-`main.py` `run_pipeline` 순서·담당·mermaid: [rules/CONVENTIONS.md §4](../../rules/CONVENTIONS.md#4-파이프라인-요약-플로우차트-v2)
+`main.py` `run_pipeline` 순서·담당·mermaid: [rules/CONVENTIONS.md §4](../../rules/CONVENTIONS.md#4-파이프라인-요약-플로우차트-최종)
 
-### 7-1. Stage 5 LLM — 동작 원칙
+### 7-1. 증거패키지·Stage 5 — 동작 원칙
 
-- **로컬 LLM(qwen2.5 3B/7B, Ollama)** 을 기본으로 사용 (비용·프라이버시).
-- 신뢰도 부족·복잡 케이스만 **Claude API** 호출.
-- 입력: 추출 텍스트(1500×3), Stage4 임베딩, `EvidencePackage`(프롬프트 컨텍스트).
+**증거패키지 구성** (`stage4_embedding` → `stage1_evidence`)
+
+| 플로우차트 | 코드 필드·모듈 |
+|------------|----------------|
+| 텍스트 추출 | `stage0_extract` → `text_front/middle/rear` |
+| OCR | `stage2_ocr` |
+| 파일명 룰기반 | `stage3_rule` (main에서 선행, 확정 시 Claude 생략) |
+| 임베딩 | SBERT → `embedding` |
+| 의미신호 | `keyword_hits`, `pattern_flags`, `version_hint` |
+| 의미 코어 | `embedding` 벡터 |
+
+**Claude API 카테고리 분류** (`stage5_classify.run` → `stage5_claude`)
+
+- 증거패키지 + (선택) 피드백 임베딩 유사도 이후 **Claude API** 로 7개 카테고리 분류.
+- 입력: `EvidencePackage` (본문 일부·메타·의미신호·의미 코어 요약).
 - 출력: `category`, `confidence`, `reason`, `keywords` (JSON).
+- 실패·저신뢰 → **검토큐** (점선: 재시도·수동 검토는 MVP에서 검토큐로 처리).
 
 ### 7-2. 설정 파일
 
@@ -204,35 +215,36 @@ http://localhost:8000/docs
 | `config/keywords.json` | 3 | 룰·키워드 (파일명·본문 협의) |
 | `config/embedding.json` (예정) | 4 | SBERT 모델명 등 |
 | `config/cluster.json` (예정) | 6 | HDBSCAN 파라미터 |
-| `.env` | 5 | `ANTHROPIC_API_KEY`, `MAX_CONCURRENT_LLM`, Ollama URL |
+| `.env` | 5 | `ANTHROPIC_API_KEY`, `MAX_CONCURRENT_LLM` |
 
-### 7-3. 현재 코드 vs v2 (갭)
+### 7-3. 현재 코드 vs 플로우차트 최종
 
-| v2 Stage | 현재 backend |
+| 플로우차트 | 현재 backend |
 |:--------:|-------------|
-| 1 추출 | `stage0_extract.py` (이름만 다름) ✅ |
-| 2 OCR | `stage2_ocr.py` 스텁 (실 OCR는 담당자 확장) |
-| 3 룰 | `stage3_rule.py` (파일명 키워드) ✅ |
-| 4 임베딩 | `stage4_embedding.py` → `stage1_evidence` 위임 ✅ |
-| 5 LLM | `stage5_llm_claude` ✅ / `stage5_llm_local` ✅ (Qwen→Claude) |
-| 6 군집 | `stage6_cluster.py` (HDBSCAN) ✅ |
-| 7 검토 | `stage7_review.py` + API ✅ |
-| 순서 | ✅ `main.py`: Pre→추출→(필요 시 OCR)→룰→임베딩 패키지→로컬 LLM→(필요 시 외부 API)→군집→버전→검토 |
-
+| 사전처리·캐시 | `pre_stage.py` ✅ |
+| 텍스트 추출·OCR | `stage0_extract`, `stage2_ocr` ✅ (OCR 스텁) |
+| 증거패키지(룰·임베딩·의미신호·코어) | `stage3_rule`, `stage4_embedding` ✅ |
+| Claude API 분류 | `stage5_classify` + `stage5_claude` ✅ |
+| 검토큐·확정·폴더 | `stage7_review`, `POST /confirm`, `folder_complete` ✅ |
+| 군집·버전 | `stage6_cluster`, `stage4_version` (폴더 구조 전 처리) ✅ |
 ### 7-4. WebSocket 진행 이벤트 키(`stage`)
 
-프론트 진행 표시에서 사용하는 `stage` 값은 현재 아래와 같이 고정한다.
+프론트 진행 표시에서 사용하는 `stage` 값 (플로우차트 최종).
 
-- `pre_stage`
-- `text_extract`
-- `ocr_fallback`
-- `evidence_package`
-- `local_llm`
-- `external_api`
-- `cluster_hdbscan`
-- `version_organize`
-- `feedback_learning`
-- `folder_complete`
+- `pre_stage` — 사전처리·캐시
+- `text_extract` — 텍스트 추출
+- `ocr_fallback` — OCR
+- `evidence_package` — 증거패키지 (룰 등)
+- `semantic_signal` — 의미신호
+- `semantic_core` — 의미 코어
+- `claude_category` — Claude API 카테고리 분류
+- `review_queue` — 검토큐 (파일 단위 실패)
+- `cluster_hdbscan` — 군집
+- `version_organize` — 버전 정리
+- `confirm_learning` — 확정·학습 준비 (`POST /confirm`)
+- `folder_complete` — 폴더 구조 완성
+
+레거시 키 (`local_llm`, `external_api`, `feedback_learning`)는 사용하지 않음.
 
 
 ---
@@ -249,8 +261,8 @@ http://localhost:8000/docs
 | 2 | `stage2_ocr.py` | `run(file_bytes, filename, ext)` | `dict` |
 | 3 | `stage3_rule.py` | `run(filename, ext, xxhash, version_hint="")` | `ClassifyResult \| None` |
 | 4 | `stage4_embedding.py` | `run(text_chunks, ...)` → `EvidencePackage` 조립 포함 가능 | `list[float]` / `EvidencePackage` |
-| 5 | `stage5_llm_local.py` | `async classify_with_qwen(pkg)` | `dict` |
-| 5 | `stage5_llm_claude.py` | `async classify_with_claude(pkg)` | `dict` |
+| 5 | `stage5_classify.py` | `async run(evidence, feedback_embeddings)` | `ClassifyResult` |
+| 5 | `stage5_claude.py` | `async classify_with_claude(pkg)` | `dict` |
 | 6 | `stage6_cluster.py` | `run(job_embeddings)` | `list[dict]` 군집 메타 |
 | 7 | `stage7_review.py` | `run(llm_results, clusters)` | `list[ClassifyResult]` |
 | 8 | `stage8_feedback.py` | `save_feedback` … | — (MVP 제외) |

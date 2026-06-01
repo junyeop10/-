@@ -12,7 +12,7 @@
 
 - [ ] `cd backend`
 - [ ] `.env` 설정됨
-- [ ] `ollama serve` / 모델 pull
+- [ ] `.env`에 `ANTHROPIC_API_KEY` 설정
 - [ ] `uvicorn main:app --reload`
 
 ## PR 올리기 전 (개인 체크)

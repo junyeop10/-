@@ -1,3 +1,10 @@
+"""
+증거패키지 구성 — 의미신호·의미 코어 (플로우차트 최종).
+
+- 의미신호: keyword_hits, pattern_flags, version_hint
+- 의미 코어: embedding (SBERT 벡터)
+"""
+
 import re
 
 from config.loader import BASE_KEYWORDS

@@ -1,4 +1,4 @@
-"""Stage 5 LLM 분류 — Claude API 연동 모듈 (플로우차트 v2)."""
+"""Stage 5 — Claude API 카테고리 분류 (플로우차트 최종)."""
 
 import asyncio
 import os
@@ -8,7 +8,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from models.schemas import EvidencePackage
-from pipeline.stage5_llm_common import (
+from pipeline.stage5_common import (
     SYSTEM_PROMPT,
     build_user_prompt,
     failure_result,
@@ -25,14 +25,16 @@ _semaphore: asyncio.Semaphore | None = None
 
 
 def _get_semaphore() -> asyncio.Semaphore:
-    """동시 LLM 호출 수를 제한하는 Semaphore (lazy 초기화)."""
+    """동시 Claude API 호출 수를 제한하는 Semaphore (lazy 초기화)."""
     global _semaphore
     if _semaphore is None:
         _semaphore = asyncio.Semaphore(MAX_CONCURRENT_LLM)
     return _semaphore
 
 
-async def _call_api_once(client: anthropic.AsyncAnthropic, user_prompt: str) -> dict | None:
+async def _call_api_once(
+    client: anthropic.AsyncAnthropic, user_prompt: str
+) -> dict | None:
     """Semaphore 안에서 Claude API를 1회 호출합니다."""
     async with _get_semaphore():
         message = await client.messages.create(

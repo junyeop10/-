@@ -17,7 +17,7 @@
 
 ### 중간 발표 범위 (MVP)
 
-**Stage 8(피드백·학습) 전까지** 구현·발표한다. (플로우차트 v2 기준)
+**Stage 8(피드백·학습) 전까지** 구현·발표한다. (플로우차트 최종 기준)
 
 | 포함 (Stage 0~7) | 제외 (Stage 8+) |
 |------------------|-----------------|
@@ -33,8 +33,7 @@ main
 ├── feature/stage2-ocr           ← 정건우: Stage2 OCR·전처리
 ├── feature/stage3-rule          ← 정건우: Stage3 룰·파일명 분류
 ├── feature/stage4-embedding     ← 천승원: Stage4 임베딩
-├── feature/stage5-llm-local     ← 이세연: Stage5 로컬 LLM (Ollama)
-├── feature/stage5-llm-claude    ← 이세연: Stage5 Claude API
+├── feature/stage5-claude        ← 이세연: Stage5 Claude API
 ├── feature/stage6-cluster       ← 천승원: Stage6 HDBSCAN
 ├── feature/stage7-review        ← 정윤서: Stage7 검토 UI
 └── hotfix/...
@@ -85,35 +84,43 @@ project-root/
 
 ---
 
-## 4. 파이프라인 요약 (플로우차트 v2)
+## 4. 파이프라인 요약 (플로우차트 최종)
 
 | Stage | 이름 | 담당 |
 |:-----:|------|------|
-| — | 업로드 | 김준엽 |
-| 1 | 텍스트 추출 | 김준엽 |
-| 2 | OCR·전처리 | 정건우 |
-| 3 | 룰·파일명 분류 | 정건우 |
-| 4 | 임베딩 | 천승원 |
-| 5 | LLM (Qwen → Claude) | 이세연 |
+| — | 파일 업로드 | 김준엽 |
+| Pre | 사전처리·캐시 반환 | 백엔드 통합 |
+| 1~2 | 텍스트 추출·OCR | 김준엽, 정건우 |
+| 3 | 파일명 룰기반 (증거패키지 내) | 정건우 |
+| 4 | 임베딩·의미신호·의미 코어 (증거패키지) | 천승원 |
+| 5 | **Claude API 카테고리 분류** | 이세연 |
 | 6 | HDBSCAN 군집 | 천승원 |
-| 7 | 최종·검토 UI | 정윤서 |
+| 7 | 검토큐·확정·폴더 구조 | 정윤서 |
 | 8 | 피드백·학습 | 중간 발표 **제외** |
 
 ```mermaid
 flowchart TD
-    U[파일 업로드] --> P[Pre: 유효성/캐시]
-    P -->|캐시| END[완료]
-    P --> E[텍스트 추출]
-    E --> O{실패?}
-    O -->|예| OF[OCR]
-    O --> R[룰 분류]
-    OF --> R
-    R -->|미확정| EP[임베딩 패키지]
-    EP --> L[로컬 LLM]
-    L -->|폴백| A[Claude API]
-    L --> C[군집]
-    A --> C
-    C --> V[버전 정리] --> END
+    U[파일 업로드] --> P[사전처리]
+    P -->|캐시 반환| DONE[완료]
+    P --> EP[증거패키지 구성]
+    subgraph EP_BOX[증거패키지 구성]
+        T[텍스트 추출]
+        OCR[OCR]
+        R[파일명 룰기반]
+        EMB[임베딩]
+        SIG[의미신호]
+        CORE[의미 코어]
+        T --> OCR --> R --> EMB --> SIG --> CORE
+    end
+    EP --> CL[Claude API 카테고리 분류]
+    CL -.실패.-> EP
+    CL --> G[군집·버전 정리]
+    G --> RQ[검토큐]
+    G --> CF[확정+학습]
+    G --> FD[폴더 구조 완성]
+    RQ --> DONE
+    CF --> DONE
+    FD --> DONE
 ```
 
 구현·WebSocket 키·함수 시그니처: [backend/docs/CONVENTIONS.md](../backend/docs/CONVENTIONS.md)
@@ -127,7 +134,7 @@ flowchart TD
 | 김준엽 | `feature/frontend-upload`, `feature/stage1-extract` | 업로드, 1 |
 | 정건우 | `feature/stage2-ocr`, `feature/stage3-rule` | 2, 3 |
 | 천승원 | `feature/stage4-embedding`, `feature/stage6-cluster` | 4, 6 |
-| 이세연 | `feature/stage5-llm-local`, `feature/stage5-llm-claude` | 5 |
+| 이세연 | `feature/stage5-claude` | 5 |
 | 정윤서 | `feature/stage7-review` | 7 |
 | 백엔드 통합 | `feature/backend-server` | Pre + `main.py` 연결 |
 

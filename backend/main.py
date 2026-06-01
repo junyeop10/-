@@ -17,8 +17,8 @@ from pipeline import (
     pre_stage,
     stage0_extract,
     stage2_ocr,
-    stage3_classify,
     stage3_rule,
+    stage5_classify,
     stage4_embedding,
     stage4_version,
     stage6_cluster,
@@ -29,15 +29,6 @@ from pipeline import (
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 app = FastAPI(title="AI 파일 분류 시스템")
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    """Ollama 가용 여부를 서버 시작 시 1회만 확인."""
-    import pipeline.stage3_classify as s3
-
-    s3._ollama_available = await s3.check_ollama()
-    print(f"Ollama 사용 가능: {s3._ollama_available}")
 
 
 app.add_middleware(
@@ -86,10 +77,11 @@ async def broadcast(job_id: str, message: dict) -> None:
 
 async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     """
-    파일별 분류 파이프라인 (v2).
+    파일별 분류 파이프라인 (플로우차트 최종).
 
-    Pre → 추출 → (OCR) → 룰 → 임베딩·LLM → job 단위 군집·버전 정리 → 검토 큐 반영.
-    진행 상태는 WebSocket `stage` 키로 broadcast (CONVENTIONS.md §10-6).
+    업로드 → 사전처리(캐시) → 증거패키지(추출·OCR·룰·임베딩·의미신호·의미코어)
+    → Claude API 카테고리 분류 → 검토큐/확정·학습/폴더 구조.
+    진행 상태는 WebSocket `stage` 키로 broadcast (rules/CONVENTIONS.md §4).
     """
     total = len(files_info)
     results: list[ClassifyResult] = []
@@ -220,9 +212,9 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
+                    "substep": "filename_rule",
                 },
             )
-            # 파일명 룰로 확정되면 임베딩·LLM 생략
             rule_result = stage3_rule.run(filename, ext, xxhash)
             if rule_result is not None:
                 rule_result.file_path = file_path
@@ -241,16 +233,6 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 )
                 continue
 
-            await broadcast(
-                job_id,
-                {
-                    "stage": "evidence_package",
-                    "progress": progress,
-                    "current_file": filename,
-                    "status": "running",
-                },
-            )
-            # 증거 패키지(임베딩·키워드) 구성 후 LLM 분류 (Qwen → Claude 폴백)
             evidence = stage4_embedding.run(
                 file_bytes, filename, ext, size_kb, modified_at, xxhash, extract_result
             )
@@ -268,13 +250,34 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             await broadcast(
                 job_id,
                 {
-                    "stage": "local_llm",
+                    "stage": "semantic_signal",
+                    "progress": progress,
+                    "current_file": filename,
+                    "status": "ok",
+                    "keyword_hits": evidence.keyword_hits,
+                },
+            )
+            await broadcast(
+                job_id,
+                {
+                    "stage": "semantic_core",
+                    "progress": progress,
+                    "current_file": filename,
+                    "status": "ok" if evidence.embedding else "empty",
+                    "embedding_dim": len(evidence.embedding),
+                },
+            )
+
+            await broadcast(
+                job_id,
+                {
+                    "stage": "claude_category",
                     "progress": progress,
                     "current_file": filename,
                     "status": "running",
                 },
             )
-            result = await stage3_classify.run(evidence, feedback_embeddings)
+            result = await stage5_classify.run(evidence, feedback_embeddings)
             result.file_path = file_path
 
             if result.classify_method != "review_queue":
@@ -282,7 +285,16 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                     xxhash, result.category.value, result.confidence
                 )
                 results.append(result)
-            else:  # LLM 실패·저신뢰
+                await broadcast(
+                    job_id,
+                    {
+                        "stage": "claude_category",
+                        "progress": progress,
+                        "current_file": filename,
+                        "status": result.classify_method,
+                    },
+                )
+            else:
                 review_queue.append(
                     {
                         "filename": filename,
@@ -290,18 +302,16 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                         "xxhash": xxhash,
                     }
                 )
-
-            await broadcast(
-                job_id,
-                {
-                    "stage": "external_api"
-                    if result.classify_method == "claude_api"
-                    else "local_llm",
-                    "progress": progress,
-                    "current_file": filename,
-                    "status": result.classify_method,
-                },
-            )
+                await broadcast(
+                    job_id,
+                    {
+                        "stage": "review_queue",
+                        "progress": progress,
+                        "current_file": filename,
+                        "status": "review_queue",
+                        "reason": result.review_reason or result.reason,
+                    },
+                )
 
         except Exception as e:
             review_queue.append({"filename": filename, "reason": str(e)})
@@ -343,11 +353,10 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
 
     reviewed = stage7_review.run(results, review_queue, clusters)
 
-    # 확정·학습은 POST /confirm 에서 처리 (여기서는 UI용 ready 이벤트만)
     await broadcast(
         job_id,
         {
-            "stage": "feedback_learning",
+            "stage": "confirm_learning",
             "progress": f"{total}/{total}",
             "current_file": "",
             "status": "ready",

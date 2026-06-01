@@ -1,4 +1,9 @@
-"""Stage 4 — 임베딩·EvidencePackage 구성."""
+"""
+Stage 4 — 증거패키지 구성 (플로우차트 최종).
+
+텍스트 추출·OCR 결과를 받아 임베딩·의미신호·의미 코어를 담은 EvidencePackage 를 만듭니다.
+파일명 룰은 main.py 에서 선행 처리됩니다.
+"""
 
 from models.schemas import EvidencePackage
 from pipeline import stage1_evidence
