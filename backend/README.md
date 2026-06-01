@@ -36,8 +36,17 @@ MAX_FILE_SIZE_MB=50
 **로컬 Qwen (Stage 5):** [Ollama](https://ollama.com) 설치 후 `ollama pull qwen2.5:3b` 실행. 미실행 시 Claude API로 자동 폴백합니다.
 
 ```powershell
-python test_qwen.py
-python test_claude.py
+# 단일 파일
+python test_qwen.py C:\samples\보고서.pdf
+python test_claude.py C:\samples\보고서.pdf
+
+# 여러 파일 또는 폴더(지원 확장자 전부)
+python test_qwen.py file1.docx file2.pdf
+python test_qwen.py C:\samples\
+
+# 추출·증거만 확인 (LLM/API 호출 안 함)
+python test_qwen.py report.pdf --dry-run
+python test_claude.py report.pdf --dry-run
 ```
 
 > `.env`는 git에 올라가지 않습니다. `git add` 전에 `.gitignore`에 `.env`가 있는지 확인하세요.
