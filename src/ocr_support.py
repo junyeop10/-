@@ -9,28 +9,27 @@ from typing import Any
 import fitz
 import numpy as np
 from PIL import Image
-from rapidocr_onnxruntime import RapidOCR
+import easyocr
 
 from src.text_cleaner import build_sampled_text, normalize_text
 
 
 # ---------------------------------------------------------------------------
-# Speed-first OCR settings
+# Korean OCR settings
 # ---------------------------------------------------------------------------
 
-# 기존 5페이지보다 빠르게 처리하기 위해 최대 2페이지만 OCR
 OCR_MAX_PAGES = 2
-
-# 기존 2.0보다 낮은 해상도로 렌더링하여 OCR 속도 향상
-OCR_RENDER_SCALE = 1.25
-
-# 텍스트 추출 결과가 이보다 짧으면 OCR 후보
+OCR_RENDER_SCALE = 2.0
 DEFAULT_OCR_MIN_CHARS = 100
+OCR_EARLY_STOP_CHARS = 1000
 
-# OCR 중 충분한 텍스트가 모이면 더 이상 페이지를 읽지 않고 중단
-OCR_EARLY_STOP_CHARS = 800
+# EasyOCR Korean + English
+# gpu=False: 일반 노트북/CPU 기준 안정 실행
+# gpu=True: NVIDIA GPU/CUDA 환경이 제대로 있을 때만 사용
+OCR_LANGUAGES = ["ko", "en"]
+OCR_GPU = False
 
-_OCR_ENGINE: RapidOCR | None = None
+_OCR_ENGINE: easyocr.Reader | None = None
 
 
 FILENAME_HINT_RULES: list[tuple[str, tuple[str, ...]]] = [
@@ -56,17 +55,18 @@ NORMALIZED_FILENAME_HINT_RULES: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
-def get_ocr_engine() -> RapidOCR:
+def get_ocr_engine() -> easyocr.Reader:
     """
-    Create the OCR engine once per process and then reuse it.
+    Create the EasyOCR Korean engine once per process and reuse it.
 
-    OCR 엔진 생성은 비용이 크므로 파일마다 새로 만들지 않는다.
+    첫 실행 때 모델 다운로드/로딩 때문에 시간이 오래 걸릴 수 있다.
+    이후 같은 프로세스 안에서는 재사용된다.
     """
 
     global _OCR_ENGINE
 
     if _OCR_ENGINE is None:
-        _OCR_ENGINE = RapidOCR()
+        _OCR_ENGINE = easyocr.Reader(OCR_LANGUAGES, gpu=OCR_GPU)
 
     return _OCR_ENGINE
 
@@ -74,10 +74,6 @@ def get_ocr_engine() -> RapidOCR:
 def detect_filename_classification_hint(file_path: str | Path) -> str | None:
     """
     Return a strong category hint inferred from the file name.
-
-    예:
-    - 사업자등록증_사본.pdf -> 사업자등록증
-    - 법인등기부등본.pdf -> 법인등기부등본
     """
 
     normalized_name = normalize_text(Path(file_path).stem)
@@ -98,9 +94,6 @@ def build_filename_hint_evidence(
 ) -> str:
     """
     Build synthetic evidence text from a strong file-name hint.
-
-    파일명만으로 강한 분류 힌트가 있을 때,
-    이후 분류 단계에서 근거 텍스트처럼 사용할 수 있다.
     """
 
     hint = classification_hint or detect_filename_classification_hint(file_path)
@@ -122,18 +115,6 @@ def should_run_ocr(
 ) -> bool:
     """
     Return True only when OCR fallback is necessary.
-
-    속도 최우선 판단:
-    1. PDF가 아니면 OCR 안 함
-    2. 파일명 힌트가 강하면 OCR 생략 가능
-    3. 텍스트 추출 실패면 OCR 실행
-    4. 추출 텍스트가 기준치보다 짧으면 OCR 실행
-
-    skip_ocr_if_filename_hint=True:
-        속도 우선. 파일명 힌트가 있으면 OCR 생략.
-
-    skip_ocr_if_filename_hint=False:
-        정확도 우선. 파일명 힌트가 있어도 텍스트가 부족하면 OCR 실행.
     """
 
     file_ext = Path(file_path).suffix.lower()
@@ -160,18 +141,6 @@ def explain_ocr_decision(
 ) -> dict[str, Any]:
     """
     Describe whether OCR should run and why.
-
-    반환 예:
-    {
-        "run_ocr": True,
-        "reason": "text_empty",
-        "classification_hint": None,
-        "text_length": 0,
-        "file_ext": ".pdf",
-        "extraction_failed": False,
-        "skip_ocr_if_filename_hint": True,
-        "hint_evidence": ""
-    }
     """
 
     normalized_text = normalize_text(extracted_text)
@@ -219,14 +188,16 @@ def ocr_pdf_file(
     total_limit: int = 3000,
     part_limit: int = 1000,
     early_stop_chars: int = OCR_EARLY_STOP_CHARS,
+    render_scale: float = OCR_RENDER_SCALE,
 ) -> dict[str, Any]:
     """
-    OCR a scanned PDF and return sampled text plus metadata.
+    OCR a scanned PDF with EasyOCR Korean model and return sampled text.
 
-    Speed-first version:
-    - 최대 OCR 페이지 수를 줄인다.
-    - PDF 렌더링 해상도를 낮춘다.
-    - 충분한 OCR 텍스트가 모이면 조기 종료한다.
+    Korean-focused version:
+    - Render PDF pages at higher resolution.
+    - Preprocess image for readability.
+    - Use EasyOCR with ["ko", "en"].
+    - Stop early once enough text is collected.
     """
 
     file_path = Path(path)
@@ -264,9 +235,12 @@ def ocr_pdf_file(
             for page_index in range(page_limit):
                 page = document.load_page(page_index)
 
+                matrix = fitz.Matrix(render_scale, render_scale)
+
                 pixmap = page.get_pixmap(
-                    matrix=fitz.Matrix(OCR_RENDER_SCALE, OCR_RENDER_SCALE),
+                    matrix=matrix,
                     alpha=False,
+                    colorspace=fitz.csRGB,
                 )
 
                 image = Image.frombytes(
@@ -275,10 +249,16 @@ def ocr_pdf_file(
                     pixmap.samples,
                 )
 
-                image_array = np.array(image)
+                image_array = preprocess_ocr_image(image)
 
-                ocr_result, _ = engine(image_array)
-                page_text = _flatten_ocr_result(ocr_result)
+                ocr_result = engine.readtext(
+                    image_array,
+                    detail=1,
+                    paragraph=False,
+                    decoder="greedy",
+                )
+
+                page_text = _flatten_easyocr_result(ocr_result)
 
                 if page_text:
                     page_texts.append(page_text)
@@ -286,8 +266,6 @@ def ocr_pdf_file(
 
                 scanned_pages += 1
 
-                # 속도 최우선:
-                # 충분한 텍스트가 모이면 남은 페이지는 OCR하지 않는다.
                 if collected_chars >= early_stop_chars:
                     break
 
@@ -317,18 +295,49 @@ def ocr_pdf_file(
     }
 
 
-def _flatten_ocr_result(ocr_result: Any) -> str:
+def preprocess_ocr_image(image: Image.Image) -> np.ndarray:
     """
-    Convert RapidOCR output into plain text lines.
+    Improve OCR readability before sending the image to EasyOCR.
 
-    RapidOCR 결과는 보통 다음 형태에 가깝다.
+    EasyOCR는 RGB numpy array 입력을 받을 수 있다.
+    """
+
+    gray = image.convert("L")
+    array = np.array(gray).astype(np.float32)
+
+    min_value = float(array.min())
+    max_value = float(array.max())
+
+    if max_value - min_value < 5:
+        output = np.clip(array, 0, 255).astype(np.uint8)
+        return np.stack([output, output, output], axis=-1)
+
+    normalized = (array - min_value) / (max_value - min_value)
+    normalized = normalized * 255.0
+
+    mean_value = normalized.mean()
+    contrast = (normalized - mean_value) * 1.25 + mean_value
+
+    enhanced = np.where(
+        contrast < 180,
+        contrast * 0.88,
+        np.minimum(contrast * 1.03, 255),
+    )
+
+    enhanced = np.clip(enhanced, 0, 255).astype(np.uint8)
+
+    return np.stack([enhanced, enhanced, enhanced], axis=-1)
+
+
+def _flatten_easyocr_result(ocr_result: Any) -> str:
+    """
+    Convert EasyOCR result into plain text lines.
+
+    EasyOCR result format:
     [
-        [box, text, score],
-        [box, text, score],
+        (bbox, text, confidence),
         ...
     ]
-
-    버전에 따라 text 부분이 tuple/list 형태일 수 있어 방어적으로 처리한다.
     """
 
     if not ocr_result:
@@ -337,31 +346,12 @@ def _flatten_ocr_result(ocr_result: Any) -> str:
     lines: list[str] = []
 
     for item in ocr_result:
-        text_value = _extract_text_from_ocr_item(item)
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+
+        text_value = str(item[1]).strip()
 
         if text_value:
             lines.append(text_value)
 
     return "\n".join(lines)
-
-
-def _extract_text_from_ocr_item(item: Any) -> str:
-    """
-    Extract text safely from one OCR result item.
-    """
-
-    if not isinstance(item, (list, tuple)):
-        return ""
-
-    if len(item) < 2:
-        return ""
-
-    text_part = item[1]
-
-    if isinstance(text_part, str):
-        return text_part.strip()
-
-    if isinstance(text_part, (list, tuple)) and text_part:
-        return str(text_part[0]).strip()
-
-    return str(text_part).strip()
