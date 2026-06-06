@@ -9,7 +9,6 @@ sentence-transformers
 # scipy 1.14+ needs NumPy 2.x; pin both on Windows to avoid DLL errors
 numpy>=1.26.0,<2.0.0
 scipy>=1.11.0,<1.14.0
-hdbscan
 python-levenshtein
 pymupdf
 python-docx

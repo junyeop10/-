@@ -9,8 +9,8 @@ backend/pipeline — 파일 분류 파이프라인 모듈 모음
   stage3_rule      → 파일명 키워드 룰 분류 (확정 시 이후 단계 생략)
   stage4_embedding → 임베딩·키워드·EvidencePackage 구성
   stage5_classify  → 임베딩 유사도 + Claude 1차 + RAG 2차
-  stage6_cluster   → HDBSCAN 군집 (회의 결정: 추후 제거 예정)
-  stage4_version   → 버전·중복 그룹 정리
   stage7_review    → 결과·검토큐 정리
+  stage6_cluster   → (비활성) clusters=[]
+  stage4_version   → (비활성) version_groups=[]
   stage6_feedback  → 사용자 수정 로그 저장 (/confirm)
 """

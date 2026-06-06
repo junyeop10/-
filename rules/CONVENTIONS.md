@@ -34,7 +34,7 @@ main
 ├── feature/stage3-rule          ← 정건우: Stage3 룰·파일명 분류
 ├── feature/stage4-embedding     ← 천승원: Stage4 임베딩
 ├── feature/stage5-claude        ← 이세연: Stage5 Claude API
-├── feature/stage6-cluster       ← 천승원: Stage6 HDBSCAN
+├── feature/stage6-cluster       ← 천승원: Stage6 군집 (HDBSCAN 미사용)
 ├── feature/stage7-review        ← 정윤서: Stage7 검토 UI
 └── hotfix/...
 ```
@@ -94,7 +94,7 @@ project-root/
 | 3 | 파일명 룰기반 (증거패키지 내) | 정건우 |
 | 4 | 임베딩·의미신호·의미 코어 (증거패키지) | 천승원 |
 | 5 | **Claude API 카테고리 분류** | 이세연 |
-| 6 | HDBSCAN 군집 | 천승원 |
+| 6 | ~~HDBSCAN 군집~~ (미사용) | 천승원 |
 | 7 | 검토큐·확정·폴더 구조 | 정윤서 |
 | 8 | 피드백·학습 | 중간 발표 **제외** |
 
@@ -114,10 +114,9 @@ flowchart TD
     end
     EP --> CL[Claude API 카테고리 분류]
     CL -.실패.-> EP
-    CL --> G[군집·버전 정리]
-    G --> RQ[검토큐]
-    G --> CF[확정+학습]
-    G --> FD[폴더 구조 완성]
+    CL --> RQ[검토큐]
+    CL --> CF[확정+학습]
+    CL --> FD[폴더 구조 완성]
     RQ --> DONE
     CF --> DONE
     FD --> DONE
@@ -154,8 +153,8 @@ flowchart TD
 |------|------|
 | `results` | 분류 완료 (`/confirm` 가능) |
 | `review_queue` | 실패·보류 (수동 검토) |
-| `version_groups` | 버전·중복 그룹 |
-| `clusters` | HDBSCAN 군집 |
+| `version_groups` | 버전 그룹 (플로우차트 미포함, 항상 `[]`) |
+| `clusters` | 군집 (플로우차트 미포함, 항상 `[]`) |
 
 ---
 

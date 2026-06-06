@@ -226,7 +226,7 @@ http://localhost:8000/docs
 | 증거패키지(룰·임베딩·의미신호·코어) | `stage3_rule`, `stage4_embedding` ✅ |
 | Claude API 분류 | `stage5_classify` + `stage5_claude` ✅ |
 | 검토큐·확정·폴더 | `stage7_review`, `POST /confirm`, `folder_complete` ✅ |
-| 군집·버전 | `stage6_cluster`, `stage4_version` (폴더 구조 전 처리) ✅ |
+| ~~군집·버전~~ | 플로우차트 미포함 — `clusters`·`version_groups` 는 API 호환용 `[]` |
 ### 7-4. WebSocket 진행 이벤트 키(`stage`)
 
 프론트 진행 표시에서 사용하는 `stage` 값 (플로우차트 최종).
@@ -239,8 +239,6 @@ http://localhost:8000/docs
 - `semantic_core` — 의미 코어
 - `claude_category` — Claude API 카테고리 분류
 - `review_queue` — 검토큐 (파일 단위 실패)
-- `cluster_hdbscan` — 군집
-- `version_organize` — 버전 정리
 - `confirm_learning` — 확정·학습 준비 (`POST /confirm`)
 - `folder_complete` — 폴더 구조 완성
 
@@ -263,7 +261,8 @@ http://localhost:8000/docs
 | 4 | `stage4_embedding.py` | `run(text_chunks, ...)` → `EvidencePackage` 조립 포함 가능 | `list[float]` / `EvidencePackage` |
 | 5 | `stage5_classify.py` | `async run(evidence, feedback_embeddings)` | `ClassifyResult` |
 | 5 | `stage5_claude.py` | `async classify_with_claude(pkg)` | `dict` |
-| 6 | `stage6_cluster.py` | `run(job_embeddings)` | `list[dict]` 군집 메타 |
+| — | `stage6_cluster.py` | `run(...)` | `[]` (비활성) |
+| — | `stage4_version.py` | `run(...)` | `[]` (비활성) |
 | 7 | `stage7_review.py` | `run(llm_results, clusters)` | `list[ClassifyResult]` |
 | 8 | `stage8_feedback.py` | `save_feedback` … | — (MVP 제외) |
 

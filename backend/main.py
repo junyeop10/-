@@ -33,7 +33,6 @@ from pipeline import (
     stage3_rule,
     stage5_classify,
     stage4_embedding,
-    stage4_version,
     stage6_cluster,
     stage6_feedback,
     stage7_review,
@@ -99,7 +98,6 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
     total = len(files_info)
     results: list[ClassifyResult] = []
     review_queue: list[dict] = []
-    cluster_job_items: list[dict] = []  # HDBSCAN 입력 (임베딩 있는 파일만)
     feedback_embeddings = stage6_feedback.get_feedback_embeddings()
 
     for idx, info in enumerate(files_info, start=1):
@@ -249,17 +247,7 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
             evidence = stage4_embedding.run(
                 file_bytes, filename, ext, size_kb, modified_at, xxhash, extract_result
             )
-            stage4_version.register_embedding(xxhash, evidence.embedding)
             _job_embeddings.setdefault(job_id, {})[xxhash] = evidence.embedding
-            if evidence.embedding:
-                cluster_job_items.append(
-                    {
-                        "xxhash": xxhash,
-                        "embedding": evidence.embedding,
-                        "filename": filename,
-                    }
-                )
-
             await broadcast(
                 job_id,
                 {
@@ -341,30 +329,9 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                 },
             )
 
-    # job 전체: 유사 문서 군집 → 버전 그룹 → 결과 정리
-    await broadcast(
-        job_id,
-        {
-            "stage": "cluster_hdbscan",
-            "progress": f"{total}/{total}",
-            "current_file": "",
-            "status": "running",
-        },
-    )
-    clusters = stage6_cluster.run(cluster_job_items)
-
-    await broadcast(
-        job_id,
-        {
-            "stage": "version_organize",
-            "progress": f"{total}/{total}",
-            "current_file": "",
-            "status": "running",
-        },
-    )
-
-    version_groups = stage4_version.run(results)
-    stage4_version.clear_embeddings()
+    # job 전체: 결과 정리 (군집·버전 정리는 플로우차트에 없음 — API 호환용 빈 목록)
+    clusters: list[dict] = stage6_cluster.run([])
+    version_groups: list[dict] = []
 
     reviewed = stage7_review.run(results, review_queue, clusters)
 
