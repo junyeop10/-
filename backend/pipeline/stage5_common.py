@@ -39,6 +39,24 @@ reason과 keywords는 반드시 한국어로만 작성하세요. 중국어·영�
 """
 
 
+_LLM_FAILURE_REASONS_EXACT = frozenset(
+    {
+        "JSON 파싱 실패",
+        "API 키 미설정",
+        "크레딧 부족",
+        "API 키 오류",
+        "요청 한도 초과",
+    }
+)
+
+
+def is_llm_failure_reason(reason: str) -> bool:
+    """Claude API·파싱 실패 reason 여부."""
+    if reason in _LLM_FAILURE_REASONS_EXACT:
+        return True
+    return reason.startswith("API 오류:")
+
+
 def failure_result(reason: str) -> dict:
     """API·파싱 실패 시 반환 형식."""
     return {

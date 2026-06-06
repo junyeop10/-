@@ -14,14 +14,12 @@ from dotenv import load_dotenv
 
 from models.schemas import Category, ClassifyResult, EvidencePackage
 from pipeline.stage5_claude import classify_with_claude
+from pipeline.stage5_common import is_llm_failure_reason
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 LLM_MIN_CONFIDENCE = float(os.getenv("LLM_MIN_CONFIDENCE", "0.60"))
 EMBEDDING_MIN_SIMILARITY = float(os.getenv("EMBEDDING_MIN_SIMILARITY", "0.75"))
-
-_LLM_FAILURE_REASONS = frozenset({"API 오류", "JSON 파싱 실패"})
-
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if not a or not b:
@@ -129,7 +127,7 @@ async def _classify_with_claude(evidence: EvidencePackage) -> Optional[dict]:
         data = await classify_with_claude(evidence)
     except Exception:
         return None
-    if not data or data.get("reason") in _LLM_FAILURE_REASONS:
+    if not data or is_llm_failure_reason(str(data.get("reason", ""))):
         return None
     if data.get("category") == Category.UNCLASSIFIED.value and float(
         data.get("confidence", 0)

@@ -15,6 +15,24 @@ from pipeline.stage5_common import (
     parse_response_text,
 )
 
+
+def _api_error_reason(exc: Exception) -> str:
+    """Anthropic 예외를 테스트·로그용 한글 reason으로 변환."""
+    msg = str(exc)
+    lower = msg.lower()
+
+    if isinstance(exc, anthropic.AuthenticationError):
+        return "API 키 오류"
+    if isinstance(exc, anthropic.RateLimitError):
+        return "요청 한도 초과"
+    if "credit balance" in lower or "too low" in lower:
+        return "크레딧 부족"
+    if "invalid x-api-key" in lower or "authentication" in lower:
+        return "API 키 오류"
+
+    detail = msg if len(msg) <= 200 else msg[:200] + "..."
+    return f"API 오류: {detail}"
+
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 MODEL_ID = "claude-sonnet-4-20250514"
@@ -56,7 +74,7 @@ async def classify_with_claude(pkg: EvidencePackage) -> dict:
     """
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
-        return failure_result("API 오류")
+        return failure_result("API 키 미설정")
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
     user_prompt = build_user_prompt(pkg)
@@ -66,9 +84,9 @@ async def classify_with_claude(pkg: EvidencePackage) -> dict:
             parsed = await _call_api_once(client, user_prompt)
             if parsed is not None:
                 return parsed
-        except Exception:
+        except Exception as exc:
             if attempt == 1:
-                return failure_result("API 오류")
+                return failure_result(_api_error_reason(exc))
             continue
 
     return failure_result("JSON 파싱 실패")
