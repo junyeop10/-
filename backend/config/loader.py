@@ -2,16 +2,17 @@ import json
 from pathlib import Path
 
 _KEYWORDS_PATH = Path(__file__).resolve().parent / "keywords.json"
+_CATEGORIES_PATH = Path(__file__).resolve().parent / "categories.json"
 
 _DEFAULT_KEYWORDS: dict[str, list[str]] = {
-    "최종본": ["최종", "final", "확정", "complete"],
+    "공고_지침_양식": ["공고", "지침", "양식", "모집", "접수", "신청"],
+    "사업계획서 수행계획서": ["사업계획", "수행계획", "제안서", "직무수행"],
+    "조사_참고자료": ["조사", "참고", "논문", "리서치"],
+    "중간_최종 결과물 및 보고서": ["보고서", "결과보고", "최종보고", "중간보고"],
     "발표자료": ["발표", "presentation", "슬라이드", "ppt"],
-    "보고서": ["보고서", "report", "분석", "결과"],
-    "데이터": ["데이터", "data", "통계", "수치"],
-    "참고자료": ["참고", "reference", "논문", "조사"],
-    "작업중": ["draft", "임시", "temp", "wip", "작업중"],
-    "공고": ["공고", "모집", "접수", "신청"],
-    "계약": ["계약", "협약", "을", "갑", "대금"],
+    "견적_계약_정산": ["견적", "계약", "협약", "정산", "대금"],
+    "기업 인증서": ["인증서", "등록증", "면허", "특허", "iso"],
+    "기타": ["기타"],
 }
 
 
@@ -34,6 +35,33 @@ def load_keywords() -> dict[str, list[str]]:
         return dict(_DEFAULT_KEYWORDS)
 
 
+def load_categories() -> dict[str, dict]:
+    """RAG·LLM용 카테고리 설명·예시 (categories.json)."""
+    if not _CATEGORIES_PATH.exists():
+        return {}
+
+    try:
+        with open(_CATEGORIES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return {
+            str(name): {
+                "description": str(meta.get("description", "")),
+                "sample_keywords": [
+                    str(k) for k in meta.get("sample_keywords", []) if k
+                ],
+                "sample_filenames": [
+                    str(f) for f in meta.get("sample_filenames", []) if f
+                ],
+            }
+            for name, meta in data.items()
+            if isinstance(meta, dict)
+        }
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def reload_keywords() -> dict[str, list[str]]:
     """JSON 수정 후 서버 재시작 없이 다시 읽을 때 (선택)."""
     global BASE_KEYWORDS
@@ -41,5 +69,11 @@ def reload_keywords() -> dict[str, list[str]]:
     return BASE_KEYWORDS
 
 
-# 서버 import 시 1회 로드 → Stage1·Stage3가 이 dict 사용
+def reload_categories() -> dict[str, dict]:
+    global CATEGORY_CATALOG
+    CATEGORY_CATALOG = load_categories()
+    return CATEGORY_CATALOG
+
+
 BASE_KEYWORDS = load_keywords()
+CATEGORY_CATALOG = load_categories()

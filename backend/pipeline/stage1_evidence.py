@@ -61,14 +61,19 @@ def run(
     version_hint = _detect_version_hint(filename)
 
     pattern_flags = {
-        "is_announcement": any(
-            w.lower() in combined.lower() for w in BASE_KEYWORDS["공고"]
+        "is_notice_form": any(
+            w.lower() in combined.lower()
+            for w in BASE_KEYWORDS.get("공고_지침_양식", [])
         ),
-        "is_contract": any(
-            w.lower() in combined.lower() for w in BASE_KEYWORDS["계약"]
+        "is_contract_settlement": any(
+            w.lower() in combined.lower()
+            for w in BASE_KEYWORDS.get("견적_계약_정산", [])
         ),
-        "is_draft": version_hint == "draft"
-        or any(w.lower() in combined.lower() for w in BASE_KEYWORDS["작업중"]),
+        "is_certificate": any(
+            w.lower() in combined.lower()
+            for w in BASE_KEYWORDS.get("기업 인증서", [])
+        ),
+        "is_draft": version_hint == "draft",
     }
 
     embed_text = text_front + text_middle

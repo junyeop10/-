@@ -56,7 +56,7 @@ def save_feedback(log: FeedbackLog) -> None:
 
 def finalize_document(result: ClassifyResult) -> FinalizedDocument:
     sha256 = ""
-    if result.category == Category.FINAL and result.file_path:
+    if result.category == Category.DELIVERABLE_REPORT and result.file_path:
         path = Path(result.file_path)
         if path.exists():
             h = hashlib.sha256()

@@ -3,26 +3,20 @@
 import json
 import re
 
-from models.schemas import EvidencePackage
+from models.schemas import CLASSIFICATION_CATEGORIES, EvidencePackage
+from pipeline.stage5_rag import CategoryHint
 
-CATEGORIES = [
-    "최종본",
-    "발표자료",
-    "보고서",
-    "데이터",
-    "참고자료",
-    "작업중",
-    "분류불가",
-]
+CATEGORIES = list(CLASSIFICATION_CATEGORIES)
 
 CATEGORY_DESCRIPTIONS = """
-- 최종본: 확정·완료된 최종 산출물 (final, 확정, complete 등)
-- 발표자료: 발표·슬라이드·PPT 중심 자료
-- 보고서: 분석·결과·현황을 담은 보고 문서
-- 데이터: 통계·수치·표·데이터셋 중심 파일
-- 참고자료: 참고·논문·조사·배경 자료
-- 작업중: draft, 임시, WIP 등 미완성 초안
-- 분류불가: 위 카테고리에 해당하지 않거나 판단 불가
+- 공고_지침_양식: 공고문, 사업 지침, 신청·접수 양식, 모집 안내
+- 사업계획서 수행계획서: 사업계획서, 수행계획서, 제안서, 직무수행계획서
+- 조사_참고자료: 시장·기술 조사, 참고 문헌, 사전 검토·배경 자료
+- 중간_최종 결과물 및 보고서: 중간·최종 보고서, 결과물, 성과 보고
+- 발표자료: 발표 슬라이드, PT, 시연·데모 발표 자료
+- 견적_계약_정산: 견적서, 계약서, 협약서, 정산·지급 문서
+- 기업 인증서: 기업·제품 인증서, 등록증, 면허, 특허, ISO 등
+- 기타: 위 7개에 명확히 속하지 않는 일반 문서 (새 유형은 suggested_category로 제안)
 """.strip()
 
 SYSTEM_PROMPT = f"""당신은 기업 문서 파일 분류 전문가입니다.
@@ -36,6 +30,24 @@ SYSTEM_PROMPT = f"""당신은 기업 문서 파일 분류 전문가입니다.
 category는 반드시 다음 중 하나: {", ".join(CATEGORIES)}
 confidence는 0.0~1.0 사이 숫자입니다.
 reason과 keywords는 반드시 한국어로만 작성하세요. 중국어·영어 사용 금지.
+"""
+
+RAG_SYSTEM_PROMPT = f"""당신은 기업 문서 파일 분류 전문가입니다.
+유사 카테고리 힌트(RAG)와 파일 정보를 보고 최종 분류하세요.
+
+{CATEGORY_DESCRIPTIONS}
+
+판단 규칙:
+1. 힌트와 본문이 기존 7개 카테고리 중 하나에 맞으면 해당 category를 선택하세요.
+2. 7개에 맞지 않지만 문서 유형이 분명하면 category를 "기타"로 두고 is_new_category=true, suggested_category에 새 카테고리명·설명을 제안하세요.
+3. 정말 판단 불가하면 category="기타", is_new_category=false 로 두세요.
+
+반드시 아래 JSON만 출력하세요.
+{{"category": str, "confidence": float, "reason": str, "keywords": list[str], "is_new_category": bool, "suggested_category": {{"name": str, "description": str}} | null}}
+
+category는 반드시 다음 중 하나: {", ".join(CATEGORIES)}
+confidence는 0.0~1.0 사이 숫자입니다.
+reason, keywords, suggested_category.description은 한국어로만 작성하세요.
 """
 
 
@@ -58,12 +70,14 @@ def is_llm_failure_reason(reason: str) -> bool:
 
 
 def failure_result(reason: str) -> dict:
-    """API·파싱 실패 시 반환 형식."""
+    """API·파싱 실패 시 반환 형식 (시스템용 분류불가)."""
     return {
         "category": "분류불가",
         "confidence": 0.0,
         "reason": reason,
         "keywords": [],
+        "is_new_category": False,
+        "suggested_category": None,
     }
 
 
@@ -91,8 +105,59 @@ text_rear:
 """
 
 
+def build_rag_user_prompt(pkg: EvidencePackage, hints: list[CategoryHint]) -> str:
+    """RAG 힌트를 포함한 2차 분류 프롬프트."""
+    base = build_user_prompt(pkg)
+    if not hints:
+        hint_block = "(유사 카테고리 힌트 없음)"
+    else:
+        lines = []
+        for i, hint in enumerate(hints, start=1):
+            samples = ", ".join(hint.sample_filenames) or "(없음)"
+            lines.append(
+                f"{i}. {hint.name} (score={hint.score:.1f})\n"
+                f"   설명: {hint.description}\n"
+                f"   예시 파일명: {samples}"
+            )
+        hint_block = "\n".join(lines)
+
+    return f"""{base}
+
+--- RAG 유사 카테고리 힌트 ---
+{hint_block}
+
+위 힌트를 참고해 기존 카테고리에 넣을 수 있는지 판단하세요.
+넣을 곳이 없으면 is_new_category와 suggested_category를 사용하세요.
+"""
+
+
+def _normalize_keywords(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(k) for k in raw]
+
+
+def _normalize_suggested(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name", "")).strip()
+    description = str(raw.get("description", "")).strip()
+    if not name:
+        return None
+    return {"name": name, "description": description}
+
+
 def parse_response_text(text: str) -> dict | None:
     """모델 응답 텍스트에서 JSON 객체를 추출·파싱합니다."""
+    return _parse_json_response(text, rag_mode=False)
+
+
+def parse_rag_response_text(text: str) -> dict | None:
+    """RAG 2차 분류 응답 파싱."""
+    return _parse_json_response(text, rag_mode=True)
+
+
+def _parse_json_response(text: str, rag_mode: bool) -> dict | None:
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
         return None
@@ -104,9 +169,9 @@ def parse_response_text(text: str) -> dict | None:
     if not isinstance(data, dict):
         return None
 
-    category = str(data.get("category", "분류불가"))
+    category = str(data.get("category", "기타"))
     if category not in CATEGORIES:
-        category = "분류불가"
+        category = "기타"
 
     try:
         confidence = float(data.get("confidence", 0.0))
@@ -114,15 +179,20 @@ def parse_response_text(text: str) -> dict | None:
         confidence = 0.0
     confidence = max(0.0, min(1.0, confidence))
 
-    reason = str(data.get("reason", ""))
-    keywords = data.get("keywords", [])
-    if not isinstance(keywords, list):
-        keywords = []
-    keywords = [str(k) for k in keywords]
-
-    return {
+    result = {
         "category": category,
         "confidence": confidence,
-        "reason": reason,
-        "keywords": keywords,
+        "reason": str(data.get("reason", "")),
+        "keywords": _normalize_keywords(data.get("keywords", [])),
+        "is_new_category": False,
+        "suggested_category": None,
     }
+
+    if rag_mode:
+        result["is_new_category"] = bool(data.get("is_new_category", False))
+        if result["is_new_category"]:
+            result["suggested_category"] = _normalize_suggested(
+                data.get("suggested_category")
+            )
+
+    return result

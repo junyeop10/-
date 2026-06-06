@@ -300,6 +300,8 @@ async def run_pipeline(job_id: str, files_info: list[dict]) -> None:
                         "filename": filename,
                         "reason": result.review_reason or result.reason,
                         "xxhash": xxhash,
+                        "is_new_category": result.is_new_category,
+                        "suggested_category": result.suggested_category,
                     }
                 )
                 await broadcast(
@@ -514,7 +516,7 @@ async def confirm(job_id: str, body: dict):
         )
         stage6_feedback.save_feedback(log)
 
-        if user_category == Category.FINAL:
+        if user_category == Category.DELIVERABLE_REPORT:
             stage6_feedback.finalize_document(result)
 
         saved += 1

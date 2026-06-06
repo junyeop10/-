@@ -22,6 +22,7 @@ $files = @(
     "pipeline\__init__.py",
     "pipeline\stage5_claude.py",
     "pipeline\stage5_common.py",
+    "pipeline\stage5_rag.py",
     "pipeline\pre_stage.py",
     "pipeline\stage0_extract.py",
     "pipeline\stage2_ocr.py",
@@ -29,6 +30,7 @@ $files = @(
     "pipeline\stage1_evidence.py",
     "config\__init__.py",
     "config\keywords.json",
+    "config\categories.json",
     "config\loader.py",
     "db\__init__.py",
     "db\cache.py"
