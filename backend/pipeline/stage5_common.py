@@ -1,4 +1,15 @@
-"""Stage 5 — Claude API 공통 프롬프트·JSON 파싱."""
+"""
+stage5_common.py — Stage 5 공통: 프롬프트·JSON 파싱·실패 판별
+
+[역할] Claude 에 보낼 시스템/유저 프롬프트와 응답 JSON 파싱을 담당합니다.
+       stage5_claude.py 와 stage5_classify.py 가 공통으로 사용합니다.
+[주요 함수]
+  - build_user_prompt / build_rag_user_prompt : 프롬프트 생성
+  - parse_response_text / parse_rag_response_text : 1차·2차 응답 파싱
+  - failure_result / is_llm_failure_reason : API 실패 처리
+[카테고리] 팀 폴더 기준 8개 (기타 포함). 분류불가는 시스템 전용.
+[담당] 이세연 (feature/stage5-claude)
+"""
 
 import json
 import re

@@ -1,3 +1,13 @@
+"""
+stage0_extract.py — Stage 0: 본문 텍스트 추출
+
+[역할] PDF·DOCX·XLSX·PPTX 등에서 텍스트를 뽑아 앞/중/뒤 3분할 청크로 나눕니다.
+[입력] file_bytes, filename, ext
+[출력] {"status": "success"|"failed", "front", "middle", "rear", "method"}
+[담당] 김준엽 (feature/stage1-extract)
+[다음] stage2_ocr (실패 시) → stage4_embedding
+"""
+
 from io import BytesIO
 from pathlib import Path
 

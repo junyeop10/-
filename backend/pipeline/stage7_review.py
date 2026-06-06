@@ -1,4 +1,11 @@
-"""Stage 7 — 최종 분류·검토 큐 정리 (MVP)."""
+"""
+stage7_review.py — Stage 7: 결과·검토큐 최종 정리
+
+[역할] 분류 성공 목록·검토큐·군집 결과를 API 응답 한 덩어리로 묶습니다.
+[입력] results, review_queue, clusters
+[출력] {"results", "review_queue", "clusters"}
+[담당] 정윤서 (feature/stage7-review) — UI 연동 예정
+"""
 
 from models.schemas import ClassifyResult
 

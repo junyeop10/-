@@ -1,3 +1,13 @@
+"""
+loader.py — 팀 설정 JSON 로더
+
+[역할] 서버 시작 시 keywords.json·categories.json 을 읽어 전역 변수로 제공합니다.
+[전역 변수]
+  - BASE_KEYWORDS    Stage1·Stage3 키워드 매칭 (keywords.json)
+  - CATEGORY_CATALOG RAG·LLM 카테고리 설명·예시 (categories.json)
+[수정] JSON 저장 후 uvicorn 재시작 (또는 reload_keywords / reload_categories)
+"""
+
 import json
 from pathlib import Path
 

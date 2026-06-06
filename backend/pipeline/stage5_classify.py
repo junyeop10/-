@@ -1,7 +1,16 @@
 """
-Stage 5 — Claude API 카테고리 분류 (플로우차트 최종).
+stage5_classify.py — Stage 5: 분류 오케스트레이션 (메인 진입점)
 
-피드백 임베딩 유사도 → Claude 1차 → (저신뢰·기타) RAG+Claude 2차 → 검토 큐
+[역할] 한 파일의 최종 카테고리를 결정합니다. main.py 가 이 모듈의 run() 만 호출합니다.
+[흐름]
+  1. 피드백 임베딩 유사도 (과거 사용자 수정과 비슷하면 즉시 확정)
+  2. Claude 1차 분류
+  3. 저신뢰·기타·실패 → RAG 힌트 → Claude 2차
+  4. 새 카테고리 제안(is_new_category) → 검토 큐
+  5. 그 외 실패 → 검토 큐 (classify_method=review_queue)
+[입력] EvidencePackage, feedback_embeddings
+[출력] ClassifyResult (classify_method: embedding|claude_api|claude_rag|review_queue)
+[환경변수] LLM_MIN_CONFIDENCE, EMBEDDING_MIN_SIMILARITY
 """
 
 import os

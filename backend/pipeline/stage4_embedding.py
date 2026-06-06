@@ -1,8 +1,11 @@
 """
-Stage 4 — 증거패키지 구성 (플로우차트 최종).
+stage4_embedding.py — Stage 4: EvidencePackage 조립 (진입점)
 
-텍스트 추출·OCR 결과를 받아 임베딩·의미신호·의미 코어를 담은 EvidencePackage 를 만듭니다.
-파일명 룰은 main.py 에서 선행 처리됩니다.
+[역할] stage1_evidence 를 호출해 LLM 분류에 쓸 증거 패키지를 만듭니다.
+       main.py 에서 룰 분류(stage3)에 걸리지 않은 파일만 여기로 옵니다.
+[입력] file_bytes, filename, ext, size_kb, modified_at, xxhash, extract_result
+[출력] EvidencePackage
+[다음] stage5_classify.run(evidence, ...)
 """
 
 from models.schemas import EvidencePackage

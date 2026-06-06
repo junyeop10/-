@@ -1,8 +1,12 @@
 """
-증거패키지 구성 — 의미신호·의미 코어 (플로우차트 최종).
+stage1_evidence.py — 증거패키지 내부 구성 (의미신호 + 임베딩)
 
-- 의미신호: keyword_hits, pattern_flags, version_hint
-- 의미 코어: embedding (SBERT 벡터)
+[역할] 추출된 본문에서 키워드·패턴·버전 힌트를 뽑고 SBERT 임베딩 벡터를 만듭니다.
+       stage4_embedding.run() 이 이 모듈을 호출합니다.
+[입력] file_bytes, filename, ext, size_kb, modified_at, xxhash, extract_result
+[출력] EvidencePackage (LLM·RAG·임베딩 유사도의 공통 입력)
+[설정] config/keywords.json
+[담당] 천승원 (feature/stage4-embedding)
 """
 
 import re

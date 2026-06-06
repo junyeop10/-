@@ -1,4 +1,12 @@
-"""Stage 2 — OCR·전처리 (추출 실패 시 폴백, MVP는 패스스루)."""
+"""
+stage2_ocr.py — Stage 2: OCR 폴백
+
+[역할] stage0_extract 가 실패한 이미지·스캔 PDF 에 OCR을 시도합니다.
+[입력] file_bytes, filename, ext, extract_result (이전 단계 결과)
+[출력] extract_result 와 동일 형식 (성공 시 status=ocr_fallback)
+[현재] OCR 엔진 미연동 — 입력을 그대로 통과 (검토 큐로 보냄)
+[담당] 정건우 (feature/stage2-ocr)
+"""
 
 _IMAGE_EXT = {".jpg", ".jpeg", ".png"}
 

@@ -1,3 +1,12 @@
+"""
+stage4_version.py — 버전·중복 문서 그룹 정리
+
+[역할] job 내 파일들의 임베딩·파일명 유사도로 버전/중복 그룹을 만듭니다.
+       업로드 배치가 끝난 뒤 main.py 가 한 번 호출합니다.
+[입력] results (ClassifyResult 목록), job 단위 임베딩 맵
+[출력] version_groups — 대표 파일 + 버전 목록
+"""
+
 import os
 from pathlib import Path
 

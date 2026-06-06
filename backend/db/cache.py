@@ -1,3 +1,11 @@
+"""
+cache.py — xxhash 기반 파일 분류 캐시 (SQLite)
+
+[역할] 동일 파일 재업로드 시 LLM 호출 없이 이전 분류 결과를 반환합니다.
+[저장] backend/cache.db — file_cache 테이블 (xxhash → category, confidence)
+[사용] pre_stage.py (조회), main.py (저장)
+"""
+
 import sqlite3
 import time
 from pathlib import Path

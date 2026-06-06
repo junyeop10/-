@@ -1,4 +1,13 @@
-"""Stage 3 — 키워드·룰 1차 분류 (파일명 키워드만)."""
+"""
+stage3_rule.py — Stage 3: 파일명 룰 기반 1차 분류
+
+[역할] 파일명(stem)에 keywords.json 키워드가 있으면 카테고리를 빠르게 확정합니다.
+       ppt/pptx 는 발표자료로 우선 처리합니다.
+[입력] filename, ext, xxhash
+[출력] ClassifyResult (확정) 또는 None (다음 Stage로)
+[설정] config/keywords.json, 환경변수 RULE_MIN_CONFIDENCE
+[담당] 정건우 (feature/stage3-rule)
+"""
 
 import os
 from pathlib import Path

@@ -1,4 +1,12 @@
-"""LLM 스모크 테스트용 — 디스크 파일 → EvidencePackage (main 파이프라인과 동일 추출·증거 단계)."""
+"""
+test_llm_helpers.py — 테스트용 EvidencePackage 빌더
+
+[역할] test_claude.py 전용. 디스크 파일을 읽어 main.py 와 동일한
+       pre_stage → extract → OCR → embedding 단계를 거쳐 EvidencePackage 생성.
+[함수]
+  - iter_test_paths(paths)        파일/폴더 경로를 Path 리스트로 펼침
+  - build_evidence_from_path(path) 단일 파일 → EvidencePackage
+"""
 
 from __future__ import annotations
 

@@ -1,3 +1,16 @@
+"""
+main.py — FastAPI 서버·파이프라인 연결
+
+[역할] 파일 업로드 API와 전체 분류 파이프라인을 연결합니다.
+[엔드포인트]
+  POST /upload          파일 업로드 → 백그라운드 run_pipeline()
+  GET  /result/{job_id} 분류 결과 조회
+  POST /confirm/{job_id} 사용자 카테고리 수정·피드백 저장
+  WS   /ws/{job_id}     진행 상태 실시간 수신
+[핵심 함수] run_pipeline() — pre_stage ~ stage7_review 순서 실행
+[실행] uvicorn main:app --reload  (backend 폴더에서)
+"""
+
 import asyncio
 import json
 import os

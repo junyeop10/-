@@ -1,10 +1,13 @@
 """
-Claude API 분류 스모크 테스트 (실제 파일 경로/폴더).
+test_claude.py — Claude 1차 분류 CLI 테스트 (서버 없이)
 
-사용 예:
-  python test_claude.py C:\\samples\\보고서.pdf
-  python test_claude.py ./docs/*.pdf
-  python test_claude.py C:\\samples\\ --dry-run
+[역할] 로컬 파일·폴더를 넣어 추출 + Claude 1차 분류만 빠르게 확인합니다.
+       RAG 2차·검토큐는 stage5_classify (서버) 에서만 동작합니다.
+[사용]
+  python test_claude.py 파일.pdf              실제 API 호출
+  python test_claude.py 파일.pdf --dry-run  프롬프트만 (비용 0)
+  python test_claude.py 폴더/               지원 확장자 일괄
+[의존] test_llm_helpers.py (파일 → EvidencePackage 변환)
 """
 
 from __future__ import annotations

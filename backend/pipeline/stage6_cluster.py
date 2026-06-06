@@ -1,4 +1,12 @@
-"""Stage 6 — HDBSCAN 군집화 (job 단위)."""
+"""
+stage6_cluster.py — Stage 6: HDBSCAN 군집화 (job 단위)
+
+[역할] 한 번에 업로드된 여러 파일의 임베딩을 묶어 유사 문서 클러스터를 만듭니다.
+[입력] [{"xxhash", "embedding", "filename"}, ...]
+[출력] [{"cluster_id", "filenames", "xxhashes", "size"}, ...] (최대 3개)
+[상태] 회의 결정으로 HDBSCAN 미사용 예정 — 제거·대체 전까지 유지
+[담당] 천승원 (feature/stage6-cluster)
+"""
 
 from typing import Any
 

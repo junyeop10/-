@@ -1,4 +1,14 @@
-"""Stage 5 — Claude API 카테고리 분류 (플로우차트 최종)."""
+"""
+stage5_claude.py — Stage 5: Claude API 호출
+
+[역할] Anthropic API 로 카테고리 분류를 수행합니다. 직접 호출하지 말고
+       stage5_classify.run() 을 사용하세요 (테스트는 test_claude.py 예외).
+[함수]
+  - classify_with_claude(pkg)     : 1차 분류 (RAG 없음)
+  - classify_with_claude_rag(pkg, hints) : 2차 분류 (RAG 힌트 포함)
+[환경변수] ANTHROPIC_API_KEY, MAX_CONCURRENT_LLM
+[모델] claude-sonnet-4-20250514
+"""
 
 import asyncio
 import os

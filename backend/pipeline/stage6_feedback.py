@@ -1,3 +1,13 @@
+"""
+stage6_feedback.py — 사용자 피드백·확정 문서 저장
+
+[역할] POST /confirm 으로 사용자가 고친 카테고리를 SQLite에 저장합니다.
+       저장된 임베딩은 stage5_classify 의 유사도 선분류에 재사용됩니다.
+[입력] FeedbackLog, ClassifyResult (finalize 시)
+[저장] cache.db — feedback_log 테이블
+[담당] Stage 8 영역 (중간 발표 MVP 에서는 로그만)
+"""
+
 import hashlib
 import json
 import sqlite3

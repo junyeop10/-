@@ -1,4 +1,12 @@
-"""Stage 5 — RAG 카테고리 힌트 검색 (DB 연동 전 로컬 스텁)."""
+"""
+stage5_rag.py — Stage 5: RAG 유사 카테고리 힌트 검색
+
+[역할] 저신뢰·기타·1차 실패 시, 기존 카테고리 중 무엇과 가까운지 힌트를 찾습니다.
+       2차 Claude 프롬프트에 넣어 "기존에 넣을 곳이 있는지" 판단하게 합니다.
+[현재] keywords.json + categories.json 기반 키워드·파일명 매칭 (로컬 스텁)
+[추후] DB·벡터 검색 API 가 준비되면 fetch_category_hints() 내부만 교체
+[설정] config/categories.json (설명·예시), config/keywords.json
+"""
 
 from __future__ import annotations
 

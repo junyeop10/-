@@ -1,3 +1,12 @@
+"""
+pre_stage.py — 업로드 직후 사전 검사·캐시 조회
+
+[역할] 지원 확장자·파일 크기를 검사하고, 동일 파일(xxhash) 재업로드 시 캐시 히트를 반환합니다.
+[입력] file_bytes, filename, modified_at
+[출력] {"status": "continue"|"cached"|"review_queue", "xxhash", ...}
+[다음] continue → stage0_extract / cached → main.py 에서 즉시 완료
+"""
+
 import os
 from pathlib import Path
 
