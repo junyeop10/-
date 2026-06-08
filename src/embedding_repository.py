@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import threading
@@ -14,6 +13,7 @@ import numpy as np
 from filelock import FileLock
 
 from src.config import AppConfig
+from src.hash_utils import compute_raw_text_hash
 
 if TYPE_CHECKING:
     from src.storage import ClassificationRepository
@@ -188,9 +188,10 @@ class EmbeddingRepository:
         return len(ids)
 
     def build_storage_id(self, file_hash: str, cache_key: str) -> str:
+        cache_digest = compute_raw_text_hash(cache_key)
         if file_hash.strip():
-            return file_hash.strip()
-        return f"adhoc_{hashlib.sha256(cache_key.encode('utf-8')).hexdigest()}"
+            return f"{file_hash.strip()}_{cache_digest}"
+        return f"adhoc_{cache_digest}"
 
     @contextmanager
     def _locked_file(self, mode: str) -> Iterator[Any]:

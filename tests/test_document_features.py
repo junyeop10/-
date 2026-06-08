@@ -24,7 +24,20 @@ class DocumentFeatureExtractorTest(unittest.TestCase):
         self.assertTrue(bundle.structural_features["has_references"])
         self.assertTrue(bundle.structural_features["has_doi"])
         self.assertGreaterEqual(bundle.structural_features["citation_count"], 2)
+        self.assertGreater(bundle.structural_features["research_structure_score"], 0)
         self.assertIn("Transformer_MRI_Review_Paper.pdf".lower(), bundle.compressed_text)
+
+    def test_extracts_ocr_quality_features(self) -> None:
+        bundle = DocumentFeatureExtractor().extract(
+            file_name="scan.pdf",
+            file_ext=".pdf",
+            text="□□□ #### !!!!",
+        )
+
+        self.assertGreater(bundle.text_stats["ocr_text_length"], 0)
+        self.assertGreater(bundle.text_stats["unreadable_ratio"], 0)
+        self.assertGreater(bundle.text_stats["symbol_noise_ratio"], 0)
+        self.assertGreater(bundle.text_stats["low_quality_scan_score"], 0)
 
     def test_feature_cache_can_reuse_file_hash_and_version(self) -> None:
         base_dir = Path("tests_runtime") / f"features_{uuid4().hex}"

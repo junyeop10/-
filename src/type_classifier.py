@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.hash_utils import compute_raw_text_hash
 
 TYPE_CLASSIFIER_VERSION = "2.1"
 
@@ -194,19 +195,17 @@ class TypeClassifier:
         return weights
 
     def _training_signature(self, rows: list[dict[str, Any]]) -> str:
-        import hashlib
-
         payload = [
             {
                 "label": row.get("label"),
                 "source": row.get("source"),
                 "source_id": row.get("source_id"),
                 "weight": row.get("sample_weight"),
-                "text_hash": hashlib.sha256(str(row.get("body_text", "")).encode("utf-8")).hexdigest(),
+                "text_hash": compute_raw_text_hash(str(row.get("body_text", ""))),
             }
             for row in rows
         ]
-        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        return compute_raw_text_hash(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
     def _structural_vector(self, features: dict[str, Any]) -> list[float]:
         keys = [
@@ -234,6 +233,24 @@ class TypeClassifier:
             "layout_image_area_ratio",
             "layout_numeric_line_density",
             "layout_bullet_density",
+            "layout_header_block_score",
+            "layout_footer_pattern_score",
+            "layout_signature_area_score",
+            "layout_chart_presence_score",
+            "layout_section_divider_score",
+            "layout_numeric_column_score",
+            "layout_approval_block_score",
+            "layout_repeated_line_pattern_score",
+            "clause_pattern_score",
+            "legal_term_density",
+            "research_structure_score",
+            "report_structure_score",
+            "contact_pattern_score",
+            "heading_density",
+            "ocr_text_length",
+            "unreadable_ratio",
+            "symbol_noise_ratio",
+            "low_quality_scan_score",
         ]
         vector: list[float] = []
         for key in keys:

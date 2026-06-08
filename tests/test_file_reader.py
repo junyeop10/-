@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import zipfile
 from pathlib import Path
 from shutil import rmtree
 from uuid import uuid4
@@ -25,16 +26,19 @@ class FileReaderTest(unittest.TestCase):
         self.assertIn(".docx", SUPPORTED_SUFFIXES)
         self.assertIn(".xlsx", SUPPORTED_SUFFIXES)
         self.assertIn(".pptx", SUPPORTED_SUFFIXES)
+        self.assertIn(".hwp", SUPPORTED_SUFFIXES)
+        self.assertIn(".hwpx", SUPPORTED_SUFFIXES)
 
     def test_discover_supported_files_finds_office_documents(self) -> None:
         (self.base_dir / "sample.txt").write_text("report summary", encoding="utf-8")
         self._create_docx(self.base_dir / "sample.docx")
         self._create_xlsx(self.base_dir / "sample.xlsx")
         self._create_pptx(self.base_dir / "sample.pptx")
+        self._create_hwpx(self.base_dir / "sample.hwpx")
 
         files = discover_supported_files(self.base_dir)
         suffixes = sorted(path.suffix.lower() for path in files)
-        self.assertEqual(suffixes, [".docx", ".pptx", ".txt", ".xlsx"])
+        self.assertEqual(suffixes, [".docx", ".hwpx", ".pptx", ".txt", ".xlsx"])
 
     def test_extract_text_from_docx(self) -> None:
         path = self.base_dir / "contract.docx"
@@ -60,6 +64,14 @@ class FileReaderTest(unittest.TestCase):
         self.assertIn("slide: 1", text.lower())
         self.assertIn("business plan presentation", text.lower())
 
+    def test_extract_text_from_hwpx(self) -> None:
+        path = self.base_dir / "meeting.hwpx"
+        self._create_hwpx(path)
+
+        text = extract_text_from_file(path, fast=True)
+        self.assertIn("회의록", text)
+        self.assertIn("결정사항", text)
+
     def _create_docx(self, path: Path) -> None:
         document = Document()
         document.add_paragraph("Contract agreement for project delivery")
@@ -80,6 +92,17 @@ class FileReaderTest(unittest.TestCase):
         slide.shapes.title.text = "Business Plan Presentation"
         slide.placeholders[1].text = "Target market and execution plan"
         presentation.save(path)
+
+    def _create_hwpx(self, path: Path) -> None:
+        section_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"
+        xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:p><hp:run><hp:t>회의록</hp:t></hp:run></hp:p>
+  <hp:p><hp:run><hp:t>안건 검토 및 결정사항 정리</hp:t></hp:run></hp:p>
+</hs:sec>
+"""
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("Contents/section0.xml", section_xml)
 
 
 if __name__ == "__main__":

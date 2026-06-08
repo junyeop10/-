@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import math
@@ -12,11 +11,12 @@ from typing import Any
 import numpy as np
 
 from src.embedding_repository import EmbeddingRepository
+from src.hash_utils import compute_raw_text_hash
 from src.storage import ClassificationRepository
 from src.text_cleaner import normalize_text
 
 
-EMBEDDING_CACHE_VERSION = "1"
+EMBEDDING_CACHE_VERSION = "2-xxhash"
 logger = logging.getLogger(__name__)
 
 
@@ -188,12 +188,15 @@ class SentenceTransformerEmbedder:
                 ) from error
 
             try:
-                self._model = SentenceTransformer(self.model_name)
-            except Exception as error:
-                raise RuntimeError(
-                    f"Embedding model load failed: {self.model_name}. "
-                    "The first run may need to download model weights."
-                ) from error
+                self._model = SentenceTransformer(self.model_name, local_files_only=True)
+            except Exception:
+                try:
+                    self._model = SentenceTransformer(self.model_name)
+                except Exception as error:
+                    raise RuntimeError(
+                        f"Embedding model load failed: {self.model_name}. "
+                        "The first run may need to download model weights."
+                    ) from error
             self._last_model_load_time = time.perf_counter() - load_start
 
         return self._model
@@ -208,7 +211,7 @@ class SentenceTransformerEmbedder:
         normalized_text = normalize_text(text)
         if not self._is_cacheable_text(normalized_text):
             return None
-        text_signature = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+        text_signature = compute_raw_text_hash(normalized_text)
         safe_file_hash = file_hash or ""
         cache_key = "|".join(
             [
@@ -220,11 +223,11 @@ class SentenceTransformerEmbedder:
             ]
         )
         if self.embedding_repository is not None and text_kind == "compressed_query":
-            storage_id = f"compressed_{hashlib.sha256(cache_key.encode('utf-8')).hexdigest()}"
+            storage_id = f"compressed_{compute_raw_text_hash(cache_key)}"
         elif self.embedding_repository is not None:
             storage_id = self.embedding_repository.build_storage_id(safe_file_hash, cache_key)
         else:
-            storage_id = safe_file_hash or hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+            storage_id = safe_file_hash or compute_raw_text_hash(cache_key)
         return {
             "cache_key": cache_key,
             "file_hash": safe_file_hash,
@@ -235,9 +238,7 @@ class SentenceTransformerEmbedder:
         }
 
     def _is_cacheable_text(self, text: str) -> bool:
-        if not text.strip():
-            return False
-        return len(text.strip()) >= 8
+        return bool(text.strip())
 
     def get_last_encode_meta(self) -> dict[str, Any]:
         """Return metadata for the most recent single-text embedding call."""

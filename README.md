@@ -112,6 +112,52 @@ Stats:
 .\.venv\Scripts\python.exe app.py stats
 ```
 
+## Optional FastAPI Server Connection
+
+The local classifier can keep its existing pipeline and optionally send files to
+the bundled FastAPI backend in `backend/`.
+
+Install backend dependencies once, then start the backend from this project
+folder:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+cd backend
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+The server uses `.env` for private keys. Copy `backend\.env.example` to
+`backend\.env` when provider credentials are needed. Runtime files such as
+`backend\.env`, `backend\cache.db`, and `backend\uploads\` are intentionally
+ignored by Git.
+
+Upload files or a folder from the local project:
+
+```powershell
+.\.venv\Scripts\python.exe app.py server-upload "input_files" --wait
+```
+
+Fetch a result by `job_id`:
+
+```powershell
+.\.venv\Scripts\python.exe app.py server-result "<job_id>"
+```
+
+Listen to WebSocket progress:
+
+```powershell
+.\.venv\Scripts\python.exe app.py server-watch "<job_id>"
+```
+
+Send a user-confirmed category back to the server:
+
+```powershell
+.\.venv\Scripts\python.exe app.py server-confirm "<job_id>" --file "example.pdf" --category "보고서"
+```
+
+In the GUI, open `분류 파일`, choose files, and use `서버로 분류`.
+Server address settings are available under `설정` -> `서버 연결 설정`.
+
 Suggest feedback-derived rules:
 
 ```powershell

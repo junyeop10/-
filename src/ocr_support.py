@@ -14,8 +14,10 @@ from rapidocr_onnxruntime import RapidOCR
 from src.text_cleaner import build_sampled_text, normalize_text
 
 
-OCR_MAX_PAGES = 5
+OCR_MAX_PAGES = 2
 OCR_RENDER_SCALE = 2.0
+OCR_MAX_IMAGE_EDGE = 1600
+OCR_MIN_IMAGE_EDGE = 900
 DEFAULT_OCR_MIN_CHARS = 100
 _OCR_ENGINE: RapidOCR | None = None
 
@@ -142,6 +144,7 @@ def ocr_pdf_file(
                 page = document.load_page(page_index)
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(OCR_RENDER_SCALE, OCR_RENDER_SCALE), alpha=False)
                 image = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
+                image = resize_ocr_image(image)
                 image_array = np.array(image)
                 ocr_result, _ = engine(image_array)
                 page_text = _flatten_ocr_result(ocr_result)
@@ -171,6 +174,33 @@ def ocr_pdf_file(
         "elapsed": time.perf_counter() - start,
         "error": "",
     }
+
+
+def resize_ocr_image(
+    image: Image.Image,
+    *,
+    max_edge: int = OCR_MAX_IMAGE_EDGE,
+    min_edge: int = OCR_MIN_IMAGE_EDGE,
+) -> Image.Image:
+    """Downscale OCR input while preserving aspect ratio and readable text size."""
+    width, height = image.size
+    longest = max(width, height)
+    shortest = min(width, height)
+    if longest <= max_edge:
+        return image
+
+    scale = max_edge / float(longest)
+    new_width = max(1, int(round(width * scale)))
+    new_height = max(1, int(round(height * scale)))
+    if min(new_width, new_height) < min_edge and shortest > 0:
+        min_scale = min_edge / float(shortest)
+        if min_scale < 1.0:
+            new_width = max(1, int(round(width * min_scale)))
+            new_height = max(1, int(round(height * min_scale)))
+
+    if (new_width, new_height) == image.size:
+        return image
+    return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
 
 def _flatten_ocr_result(ocr_result: Any) -> str:

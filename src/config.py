@@ -30,9 +30,9 @@ class ScoringConfig:
 @dataclass
 class OCRConfig:
     backend: str = "rapidocr"
-    enabled: bool = True
+    enabled: bool = False
     min_text_chars: int = 100
-    max_pages: int = 5
+    max_pages: int = 2
     timeout_seconds: int = 30
     cache_enabled: bool = True
 
@@ -67,11 +67,13 @@ class FeatureExtractionConfig:
     compressed_text_total_limit: int = 2600
     layout_enabled: bool = True
     layout_extractor_version: str = "1.0"
+    evidence_cache_enabled: bool = True
+    evidence_cache_dir: str = "data/evidence_cache"
 
 
 @dataclass
 class MLConfig:
-    enabled: bool = True
+    enabled: bool = False
     type_classifier_version: str = "2.1"
     min_training_examples: int = 4
     filename_weight: float = 2.0
@@ -80,8 +82,22 @@ class MLConfig:
 @dataclass
 class ClusteringConfig:
     enabled: bool = True
+    reader_mode: str = "extended"
+    reducer: str = "umap"
     min_cluster_size: int = 3
+    min_samples: int | None = None
+    cluster_selection_method: str = "eom"
+    normalize_embeddings: bool = True
     max_candidates: int = 5
+
+
+@dataclass
+class RemoteServerConfig:
+    enabled: bool = False
+    base_url: str = "http://localhost:8000"
+    timeout_seconds: int = 60
+    poll_interval_seconds: float = 1.0
+    websocket_enabled: bool = True
 
 
 @dataclass
@@ -106,6 +122,7 @@ class AppConfig:
     features: FeatureExtractionConfig = field(default_factory=FeatureExtractionConfig)
     ml: MLConfig = field(default_factory=MLConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
+    remote: RemoteServerConfig = field(default_factory=RemoteServerConfig)
     filesystem: FileSystemConfig = field(default_factory=FileSystemConfig)
 
     def to_dict(self) -> dict[str, Any]:

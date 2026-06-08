@@ -295,11 +295,66 @@ class ClassificationRepository:
                 type TEXT NOT NULL,
                 profile_text TEXT NOT NULL,
                 tags_json TEXT NOT NULL DEFAULT '[]',
+                profile_signals_json TEXT NOT NULL DEFAULT '{}',
+                lexical_profile_json TEXT NOT NULL DEFAULT '{}',
+                profile_origin TEXT NOT NULL DEFAULT 'user',
                 weight REAL NOT NULL DEFAULT 0.5,
                 synthetic_count INTEGER NOT NULL DEFAULT 5,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS document_cache (
+                file_hash TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL DEFAULT '',
+                file_name TEXT NOT NULL DEFAULT '',
+                file_size INTEGER NOT NULL DEFAULT 0,
+                extension TEXT NOT NULL DEFAULT '',
+                raw_text TEXT NOT NULL DEFAULT '',
+                cleaned_text TEXT NOT NULL DEFAULT '',
+                text_hash TEXT NOT NULL DEFAULT '',
+                ocr_engine TEXT NOT NULL DEFAULT '',
+                ocr_version TEXT NOT NULL DEFAULT '',
+                ocr_quality_score REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS unknown_pool (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_hash TEXT NOT NULL,
+                text_hash TEXT NOT NULL DEFAULT '',
+                summary_text TEXT NOT NULL DEFAULT '',
+                cleaned_text TEXT NOT NULL DEFAULT '',
+                embedding_ref TEXT NOT NULL DEFAULT '',
+                nearest_category TEXT NOT NULL DEFAULT '',
+                nearest_similarity REAL NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(file_hash, reason)
+            );
+
+            CREATE TABLE IF NOT EXISTS unsupervised_cluster_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                algorithm TEXT NOT NULL,
+                parameters_json TEXT NOT NULL DEFAULT '{}',
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'completed',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS unsupervised_cluster_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                unknown_pool_id INTEGER NOT NULL,
+                cluster_id INTEGER NOT NULL,
+                score REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES unsupervised_cluster_runs(id),
+                FOREIGN KEY (unknown_pool_id) REFERENCES unknown_pool(id)
             );
             """
         )
@@ -323,7 +378,15 @@ class ClassificationRepository:
         self._ensure_column(connection, "classifications", "cluster_candidate_id", "INTEGER")
         self._ensure_column(connection, "classifications", "ml_evidence_json", "TEXT NOT NULL DEFAULT '{}'")
         self._ensure_column(connection, "classifications", "rule_evidence_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column(connection, "classifications", "lexical_score", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "classifications", "layout_score", "REAL NOT NULL DEFAULT 0")
         self._ensure_column(connection, "document_features", "layout_features_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column(connection, "category_profiles", "profile_signals_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column(connection, "category_profiles", "lexical_profile_json", "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column(connection, "category_profiles", "profile_origin", "TEXT NOT NULL DEFAULT 'user'")
+        self._ensure_column(connection, "document_cache", "ocr_quality_score", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "unknown_pool", "embedding_ref", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(connection, "unknown_pool", "status", "TEXT NOT NULL DEFAULT 'pending'")
         self._ensure_column(connection, "rules", "rule_scope", "TEXT NOT NULL DEFAULT 'content'")
         self._ensure_column(connection, "rules", "negative_weight", "REAL NOT NULL DEFAULT 0")
 
@@ -340,6 +403,8 @@ class ClassificationRepository:
         self._ensure_column(connection, "feedback_logs", "config_version", "TEXT NOT NULL DEFAULT '2.0'")
         self._ensure_column(connection, "feedback_logs", "ocr_used", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column(connection, "feedback_logs", "llm_used", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "feedback_logs", "confirmation_batch_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(connection, "feedback_logs", "confirmation_batch_name", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(connection, "confirmed_examples", "embedding_key", "TEXT NOT NULL DEFAULT ''")
 
         existing = connection.execute("SELECT version FROM schema_migrations WHERE version = ?", (SCHEMA_VERSION,)).fetchone()
@@ -376,26 +441,173 @@ class ClassificationRepository:
         inserted = 0
         with self.connect() as connection:
             for profile in DEFAULT_CATEGORY_PROFILES:
+                profile_signals = profile.get("profile_signals", {})
+                lexical_profile = self._build_lexical_profile_payload(profile)
+                aliases = profile_signals.get("aliases", []) if isinstance(profile_signals, dict) else []
                 existing = connection.execute(
-                    "SELECT id FROM category_profiles WHERE type = ? LIMIT 1",
+                    "SELECT id, profile_signals_json, profile_origin FROM category_profiles WHERE type = ? LIMIT 1",
                     (str(profile["type"]),),
                 ).fetchone()
+                if existing is None and aliases:
+                    alias_placeholders = ",".join("?" for _ in aliases)
+                    existing = connection.execute(
+                        f"""
+                        SELECT id, profile_signals_json, profile_origin
+                        FROM category_profiles
+                        WHERE profile_origin = 'default_seed'
+                          AND type IN ({alias_placeholders})
+                        LIMIT 1
+                        """,
+                        tuple(str(alias) for alias in aliases),
+                    ).fetchone()
                 if existing:
+                    if str(existing["profile_origin"] or "") == "default_seed":
+                        connection.execute(
+                            """
+                            UPDATE category_profiles
+                            SET type = ?,
+                                profile_text = ?,
+                                tags_json = ?,
+                                profile_signals_json = ?,
+                                lexical_profile_json = ?,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                            """,
+                            (
+                                str(profile["type"]),
+                                str(profile["profile_text"]),
+                                json.dumps(profile.get("tags", []), ensure_ascii=False),
+                                json.dumps(profile.get("profile_signals", {}), ensure_ascii=False),
+                                json.dumps(lexical_profile, ensure_ascii=False),
+                                int(existing["id"]),
+                            ),
+                        )
                     continue
                 connection.execute(
                     """
                     INSERT INTO category_profiles (
-                        type, profile_text, tags_json, weight, synthetic_count, status
-                    ) VALUES (?, ?, ?, 0.5, 5, 'active')
+                        type, profile_text, tags_json, profile_signals_json, lexical_profile_json, profile_origin, weight, synthetic_count, status
+                    ) VALUES (?, ?, ?, ?, ?, 'default_seed', 0.5, 5, 'active')
                     """,
                     (
                         str(profile["type"]),
                         str(profile["profile_text"]),
                         json.dumps(profile.get("tags", []), ensure_ascii=False),
+                        json.dumps(profile.get("profile_signals", {}), ensure_ascii=False),
+                        json.dumps(lexical_profile, ensure_ascii=False),
                     ),
                 )
                 inserted += 1
         return inserted
+
+    def _build_lexical_profile_payload(self, profile: dict[str, Any]) -> dict[str, Any]:
+        signals = profile.get("profile_signals", {})
+        lexical_signals: list[str] = []
+        if isinstance(signals, dict):
+            for key in (
+                "aliases",
+                "semantic_signals",
+                "ocr_signals",
+                "numeric_patterns",
+                "document_examples",
+                "business_use_cases",
+            ):
+                values = signals.get(key, [])
+                if isinstance(values, list):
+                    lexical_signals.extend(str(value) for value in values if str(value).strip())
+        lexical_signals.extend(str(tag) for tag in profile.get("tags", []) if str(tag).strip())
+        seen: set[str] = set()
+        deduped = []
+        for item in lexical_signals:
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        return {"lexical_signals": deduped}
+
+    def backfill_category_profile_signals(self, *, dry_run: bool = False) -> list[dict[str, Any]]:
+        """Fill missing profile_signals_json for profiles matching known default seed types."""
+        changed: list[dict[str, Any]] = []
+        default_by_type = {str(profile["type"]): profile for profile in DEFAULT_CATEGORY_PROFILES}
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, type, profile_signals_json, profile_origin
+                FROM category_profiles
+                ORDER BY type, id
+                """
+            ).fetchall()
+            for row in rows:
+                profile_type = str(row["type"])
+                default_profile = default_by_type.get(profile_type)
+                if default_profile is None:
+                    continue
+                current_signals = str(row["profile_signals_json"] or "").strip().lower()
+                if current_signals not in {"", "{}", "null"}:
+                    continue
+                item = {
+                    "id": int(row["id"]),
+                    "type": profile_type,
+                    "profile_origin": str(row["profile_origin"] or "user"),
+                }
+                changed.append(item)
+                if dry_run:
+                    continue
+                connection.execute(
+                    """
+                    UPDATE category_profiles
+                    SET profile_signals_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(default_profile.get("profile_signals", {}), ensure_ascii=False),
+                        int(row["id"]),
+                    ),
+                )
+        return changed
+
+    def expand_category_profile_training_data(
+        self,
+        *,
+        synthetic_count: int = 12,
+        dry_run: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Raise synthetic_count for known profile types without touching text or origin."""
+        changed: list[dict[str, Any]] = []
+        default_types = {str(profile["type"]) for profile in DEFAULT_CATEGORY_PROFILES}
+        target_count = max(1, int(synthetic_count))
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, type, profile_origin, synthetic_count
+                FROM category_profiles
+                ORDER BY type, id
+                """
+            ).fetchall()
+            for row in rows:
+                profile_type = str(row["type"])
+                current_count = int(row["synthetic_count"] or 0)
+                if profile_type not in default_types or current_count >= target_count:
+                    continue
+                item = {
+                    "id": int(row["id"]),
+                    "type": profile_type,
+                    "profile_origin": str(row["profile_origin"] or "user"),
+                    "old_synthetic_count": current_count,
+                    "new_synthetic_count": target_count,
+                }
+                changed.append(item)
+                if dry_run:
+                    continue
+                connection.execute(
+                    """
+                    UPDATE category_profiles
+                    SET synthetic_count = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (target_count, int(row["id"])),
+                )
+        return changed
 
     def add_category_profile(
         self,
@@ -406,18 +618,22 @@ class ClassificationRepository:
         weight: float = 0.5,
         synthetic_count: int = 5,
         status: str = "active",
+        profile_signals: dict[str, Any] | None = None,
+        lexical_profile: dict[str, Any] | None = None,
     ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO category_profiles (
-                    type, profile_text, tags_json, weight, synthetic_count, status
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    type, profile_text, tags_json, profile_signals_json, lexical_profile_json, profile_origin, weight, synthetic_count, status
+                ) VALUES (?, ?, ?, ?, ?, 'user', ?, ?, ?)
                 """,
                 (
                     category_type,
                     profile_text,
                     json.dumps(tags or [], ensure_ascii=False),
+                    json.dumps(profile_signals or {}, ensure_ascii=False),
+                    json.dumps(lexical_profile or {"lexical_signals": tags or []}, ensure_ascii=False),
                     float(weight),
                     int(synthetic_count),
                     status,
@@ -758,6 +974,8 @@ class ClassificationRepository:
         cluster_candidate_id: int | None = None,
         ml_evidence_json: str = "{}",
         rule_evidence_json: str = "{}",
+        lexical_score: float = 0.0,
+        layout_score: float = 0.0,
     ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
@@ -770,8 +988,8 @@ class ClassificationRepository:
                     source_scores_json, explanation_json, evidence_json, performance_json,
                     classifier_version, config_version,
                     predicted_type, type_confidence, review_reasons_json, suggested_tags_json,
-                    cluster_candidate_id, ml_evidence_json, rule_evidence_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cluster_candidate_id, ml_evidence_json, rule_evidence_json, lexical_score, layout_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_id,
@@ -802,6 +1020,8 @@ class ClassificationRepository:
                     cluster_candidate_id,
                     ml_evidence_json,
                     rule_evidence_json,
+                    float(lexical_score),
+                    float(layout_score),
                 ),
             )
             return int(cursor.lastrowid)
@@ -823,6 +1043,8 @@ class ClassificationRepository:
         config_version: str = SCHEMA_VERSION,
         ocr_used: bool = False,
         llm_used: bool = False,
+        confirmation_batch_id: str = "",
+        confirmation_batch_name: str = "",
     ) -> int:
         predicted_hierarchy = predicted_hierarchy or {}
         final_hierarchy = final_hierarchy or {}
@@ -836,8 +1058,8 @@ class ClassificationRepository:
                     predicted_large_category, predicted_middle_category, predicted_small_category,
                     final_large_category, final_middle_category, final_small_category,
                     evidence_text, metadata_json, source_scores_json,
-                    classifier_version, config_version, ocr_used, llm_used
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    classifier_version, config_version, ocr_used, llm_used, confirmation_batch_id, confirmation_batch_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_id,
@@ -859,6 +1081,8 @@ class ClassificationRepository:
                     config_version,
                     int(ocr_used),
                     int(llm_used),
+                    confirmation_batch_id,
+                    confirmation_batch_name,
                 ),
             )
             connection.execute("UPDATE classifications SET status = 'reviewed' WHERE id = ?", (classification_id,))
@@ -873,6 +1097,18 @@ class ClassificationRepository:
         source_feedback_log_id: int,
     ) -> int:
         with self.connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT id
+                FROM confirmed_examples
+                WHERE file_id = ? AND category = ?
+                ORDER BY id
+                LIMIT 1
+                """,
+                (file_id, category),
+            ).fetchone()
+            if existing:
+                return int(existing["id"])
             cursor = connection.execute(
                 """
                 INSERT INTO confirmed_examples (
@@ -1223,6 +1459,10 @@ class ClassificationRepository:
                 """
             ).fetchone()
 
+    def fetch_move_batch(self, batch_id: int) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute("SELECT * FROM move_batches WHERE id = ?", (batch_id,)).fetchone()
+
     def list_move_history(
         self,
         category: str | None = None,
@@ -1287,6 +1527,35 @@ class ClassificationRepository:
         with self.connect() as connection:
             return connection.execute(query, params).fetchall()
 
+    def fetch_classifications_by_ids(self, classification_ids: list[int]) -> list[sqlite3.Row]:
+        if not classification_ids:
+            return []
+        placeholders = ",".join("?" for _ in classification_ids)
+        query = f"""
+            SELECT
+                c.id AS classification_id,
+                c.file_id,
+                c.final_score,
+                c.large_category,
+                c.middle_category,
+                c.small_category,
+                c.predicted_type,
+                c.type_confidence,
+                c.review_reasons_json,
+                c.suggested_tags_json,
+                c.cluster_candidate_id,
+                f.file_path,
+                f.file_name,
+                f.xxhash64,
+                f.duplicate_of_file_id
+            FROM classifications c
+            JOIN files f ON f.id = c.file_id
+            WHERE c.id IN ({placeholders})
+            ORDER BY c.id DESC
+        """
+        with self.connect() as connection:
+            return connection.execute(query, [int(value) for value in classification_ids]).fetchall()
+
     def get_duplicate_group_folder_name(self, xxhash64: str) -> str | None:
         """Return a representative folder name when multiple files share the same content hash."""
         with self.connect() as connection:
@@ -1344,6 +1613,57 @@ class ClassificationRepository:
         with self.connect() as connection:
             return connection.execute(query, params).fetchall()
 
+    def list_confirmation_batches(self) -> list[sqlite3.Row]:
+        query = """
+            SELECT
+                CASE
+                    WHEN TRIM(COALESCE(fl.confirmation_batch_id, '')) = ''
+                    THEN 'legacy-' || fl.id
+                    ELSE fl.confirmation_batch_id
+                END AS confirmation_batch_id,
+                MAX(TRIM(COALESCE(fl.confirmation_batch_name, ''))) AS confirmation_batch_name,
+                MIN(fl.created_at) AS created_at,
+                MAX(fl.created_at) AS updated_at,
+                COUNT(*) AS file_count,
+                GROUP_CONCAT(DISTINCT COALESCE(NULLIF(fl.final_middle_category, ''), fl.final_category)) AS categories,
+                GROUP_CONCAT(f.file_name, ' | ') AS file_names,
+                GROUP_CONCAT(fl.id) AS feedback_log_ids
+            FROM feedback_logs fl
+            JOIN files f ON f.id = fl.file_id
+            GROUP BY
+                CASE
+                    WHEN TRIM(COALESCE(fl.confirmation_batch_id, '')) = ''
+                    THEN 'legacy-' || fl.id
+                    ELSE fl.confirmation_batch_id
+                END
+            ORDER BY MAX(fl.id) DESC
+        """
+        with self.connect() as connection:
+            return connection.execute(query).fetchall()
+
+    def update_confirmation_batch_name(self, confirmation_batch_id: str, confirmation_batch_name: str) -> int:
+        confirmation_batch_id = confirmation_batch_id.strip()
+        confirmation_batch_name = confirmation_batch_name.strip()
+        if not confirmation_batch_id:
+            return 0
+        if confirmation_batch_id.startswith("legacy-"):
+            try:
+                feedback_log_id = int(confirmation_batch_id.removeprefix("legacy-"))
+            except ValueError:
+                return 0
+            with self.connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE feedback_logs SET confirmation_batch_name = ? WHERE id = ?",
+                    (confirmation_batch_name, feedback_log_id),
+                )
+                return int(cursor.rowcount)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE feedback_logs SET confirmation_batch_name = ? WHERE confirmation_batch_id = ?",
+                (confirmation_batch_name, confirmation_batch_id),
+            )
+            return int(cursor.rowcount)
+
     def get_feedback_log(self, feedback_log_id: int) -> sqlite3.Row | None:
         with self.connect() as connection:
             return connection.execute(
@@ -1364,6 +1684,35 @@ class ClassificationRepository:
                 (feedback_log_id,),
             )
             cursor = connection.execute("DELETE FROM feedback_logs WHERE id = ?", (feedback_log_id,))
+            connection.execute("DELETE FROM adaptive_rule_boosts")
+            return int(cursor.rowcount)
+
+    def delete_confirmation_batch(self, confirmation_batch_id: str) -> int:
+        confirmation_batch_id = confirmation_batch_id.strip()
+        if not confirmation_batch_id:
+            return 0
+        if confirmation_batch_id.startswith("legacy-"):
+            try:
+                return self.delete_feedback_log(int(confirmation_batch_id.removeprefix("legacy-")))
+            except ValueError:
+                return 0
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM feedback_logs WHERE confirmation_batch_id = ?",
+                (confirmation_batch_id,),
+            ).fetchall()
+            feedback_ids = [int(row["id"]) for row in rows]
+            if not feedback_ids:
+                return 0
+            placeholders = ",".join("?" for _ in feedback_ids)
+            connection.execute(
+                f"DELETE FROM confirmed_examples WHERE source_feedback_log_id IN ({placeholders})",
+                feedback_ids,
+            )
+            cursor = connection.execute(
+                f"DELETE FROM feedback_logs WHERE id IN ({placeholders})",
+                feedback_ids,
+            )
             connection.execute("DELETE FROM adaptive_rule_boosts")
             return int(cursor.rowcount)
 
@@ -1417,6 +1766,156 @@ class ClassificationRepository:
     def get_cached_ocr_result(self, cache_key: str) -> sqlite3.Row | None:
         with self.connect() as connection:
             return connection.execute("SELECT * FROM ocr_cache WHERE cache_key = ?", (cache_key,)).fetchone()
+
+    def get_document_cache(self, file_hash: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute("SELECT * FROM document_cache WHERE file_hash = ?", (file_hash,)).fetchone()
+
+    def save_document_cache(
+        self,
+        *,
+        file_hash: str,
+        file_path: str,
+        file_name: str,
+        file_size: int,
+        extension: str,
+        raw_text: str,
+        cleaned_text: str,
+        text_hash: str,
+        ocr_engine: str = "",
+        ocr_version: str = "",
+        ocr_quality_score: float = 0.0,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO document_cache (
+                    file_hash, file_path, file_name, file_size, extension, raw_text, cleaned_text,
+                    text_hash, ocr_engine, ocr_version, ocr_quality_score, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(file_hash) DO UPDATE SET
+                    file_path = excluded.file_path,
+                    file_name = excluded.file_name,
+                    file_size = excluded.file_size,
+                    extension = excluded.extension,
+                    raw_text = excluded.raw_text,
+                    cleaned_text = excluded.cleaned_text,
+                    text_hash = excluded.text_hash,
+                    ocr_engine = excluded.ocr_engine,
+                    ocr_version = excluded.ocr_version,
+                    ocr_quality_score = excluded.ocr_quality_score,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    file_hash,
+                    file_path,
+                    file_name,
+                    int(file_size),
+                    extension,
+                    raw_text,
+                    cleaned_text,
+                    text_hash,
+                    ocr_engine,
+                    ocr_version,
+                    float(ocr_quality_score),
+                ),
+            )
+
+    def save_unknown_pool_entry(
+        self,
+        *,
+        file_hash: str,
+        text_hash: str,
+        cleaned_text: str,
+        nearest_category: str,
+        nearest_similarity: float,
+        reason: str,
+        embedding_ref: str = "",
+    ) -> int:
+        summary_text = cleaned_text[:1200]
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO unknown_pool (
+                    file_hash, text_hash, summary_text, cleaned_text, embedding_ref,
+                    nearest_category, nearest_similarity, reason, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(file_hash, reason) DO UPDATE SET
+                    text_hash = excluded.text_hash,
+                    summary_text = excluded.summary_text,
+                    cleaned_text = excluded.cleaned_text,
+                    embedding_ref = excluded.embedding_ref,
+                    nearest_category = excluded.nearest_category,
+                    nearest_similarity = excluded.nearest_similarity,
+                    status = 'pending',
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    file_hash,
+                    text_hash,
+                    summary_text,
+                    cleaned_text,
+                    embedding_ref,
+                    nearest_category,
+                    float(nearest_similarity),
+                    reason,
+                ),
+            )
+            row = connection.execute(
+                "SELECT id FROM unknown_pool WHERE file_hash = ? AND reason = ?",
+                (file_hash, reason),
+            ).fetchone()
+            return int(row["id"]) if row else 0
+
+    def list_unknown_pool(self, status: str = "pending", limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM unknown_pool
+                WHERE status = ?
+                ORDER BY id
+                LIMIT ?
+                """,
+                (status, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_unsupervised_cluster_run(
+        self,
+        *,
+        algorithm: str,
+        parameters: dict[str, Any],
+        metrics: dict[str, Any],
+        assignments: list[dict[str, Any]],
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO unsupervised_cluster_runs (algorithm, parameters_json, metrics_json, status)
+                VALUES (?, ?, ?, 'completed')
+                """,
+                (
+                    algorithm,
+                    json.dumps(parameters, ensure_ascii=False),
+                    json.dumps(metrics, ensure_ascii=False),
+                ),
+            )
+            run_id = int(cursor.lastrowid)
+            for assignment in assignments:
+                connection.execute(
+                    """
+                    INSERT INTO unsupervised_cluster_items (run_id, unknown_pool_id, cluster_id, score)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        int(assignment["unknown_pool_id"]),
+                        int(assignment["cluster_id"]),
+                        float(assignment.get("score", 0.0)),
+                    ),
+                )
+            return run_id
 
     def cache_embedding(
         self,

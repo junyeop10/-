@@ -133,7 +133,9 @@ class EmbeddingRepositoryTest(unittest.TestCase):
             self.embedding_repository,
         )
         self.assertEqual(summary["migrated"], 1)
-        migrated = self.embedding_repository.get_embedding("hash-a")
+        migrated = self.embedding_repository.get_embedding(
+            self.embedding_repository.build_storage_id("hash-a", "hash-a|model-a|sig|1|query")
+        )
         self.assertIsNotNone(migrated)
         self.assertAlmostEqual(float(migrated[0]), 0.4, places=6)
         self.assertAlmostEqual(float(migrated[1]), 0.5, places=6)

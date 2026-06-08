@@ -116,6 +116,13 @@ class DocumentLayoutFeatureExtractor:
         centered_title_score = self._centered_title_score(dark_mask, line_segments)
         large_header_score = self._large_header_score(line_segments, height)
         two_column_score = self._two_column_score(cols)
+        header_block_score = self._band_density_score(dark_mask, start_ratio=0.0, end_ratio=0.16)
+        footer_pattern_score = self._band_density_score(dark_mask, start_ratio=0.84, end_ratio=1.0)
+        section_divider_score = self._section_divider_score(dark_mask)
+        numeric_column_score = self._numeric_column_score(cols, ocr_text=ocr_text)
+        repeated_line_pattern_score = self._repeated_line_pattern_score(line_segments)
+        approval_block_score = self._approval_block_score(ocr_text=ocr_text, footer_score=footer_pattern_score)
+        chart_presence_score = self._chart_presence_score(image_area_ratio=image_area_ratio, block_count=block_count)
         whitespace_ratio = 1.0 - float(dark_mask.mean())
         text_density = float(dark_mask.mean())
         vertical_flow_score = self._vertical_flow_score(line_segments, height)
@@ -141,6 +148,13 @@ class DocumentLayoutFeatureExtractor:
             "large_header_score": round(large_header_score, 4),
             "image_area_ratio": round(image_area_ratio, 4),
             "two_column_score": round(two_column_score, 4),
+            "header_block_score": round(header_block_score, 4),
+            "footer_pattern_score": round(footer_pattern_score, 4),
+            "section_divider_score": round(section_divider_score, 4),
+            "numeric_column_score": round(numeric_column_score, 4),
+            "approval_block_score": round(approval_block_score, 4),
+            "repeated_line_pattern_score": round(repeated_line_pattern_score, 4),
+            "chart_presence_score": round(chart_presence_score, 4),
         }
         base.update(text_metrics)
         base.update(self._document_type_scores(base))
@@ -231,6 +245,7 @@ class DocumentLayoutFeatureExtractor:
             "certificate_pattern_score": round(certificate_score, 4),
             "centered_header_exists": float(features.get("centered_title_score", 0.0)) > 0.45,
             "seal_or_signature_area_score": round(self._seal_area_score(features), 4),
+            "signature_area_score": round(self._signature_area_score(features), 4),
             "whitespace_balance_score": round(min(1.0, 1.0 - abs(0.65 - whitespace_ratio)), 4),
             "slide_like_layout_score": round(min(1.0, slide_like), 4),
             "title_text_ratio": round(min(1.0, float(features.get("large_header_score", 0.0))), 4),
@@ -256,6 +271,14 @@ class DocumentLayoutFeatureExtractor:
             "multi_column_score": 0.0,
             "centered_title_score": 0.0,
             "large_header_score": 0.0,
+            "header_block_score": 0.0,
+            "footer_pattern_score": 0.0,
+            "signature_area_score": 0.0,
+            "chart_presence_score": 0.0,
+            "section_divider_score": 0.0,
+            "numeric_column_score": 0.0,
+            "approval_block_score": 0.0,
+            "repeated_line_pattern_score": 0.0,
             "layout_extractor_version": self.version,
             "sampled_page_count": 0,
             **metrics,
@@ -368,10 +391,70 @@ class DocumentLayoutFeatureExtractor:
         coverage = min(1.0, (centers[-1] - centers[0]) / max(height, 1))
         return regularity * coverage
 
+    def _band_density_score(self, dark_mask: np.ndarray, *, start_ratio: float, end_ratio: float) -> float:
+        height = dark_mask.shape[0]
+        start = max(0, min(height, int(height * start_ratio)))
+        end = max(start + 1, min(height, int(height * end_ratio)))
+        band_density = float(dark_mask[start:end, :].mean())
+        whole_density = float(dark_mask.mean())
+        if whole_density <= 0:
+            return 0.0
+        return max(0.0, min(1.0, band_density / max(whole_density * 1.8, 0.0001)))
+
+    def _section_divider_score(self, dark_mask: np.ndarray) -> float:
+        height, width = dark_mask.shape[:2]
+        rows = dark_mask.mean(axis=1)
+        long_rules = 0
+        for index, density in enumerate(rows):
+            if density < 0.015:
+                continue
+            cols = np.where(dark_mask[index : index + 1, :].any(axis=0))[0]
+            if cols.size and (cols[-1] - cols[0] + 1) / max(width, 1) > 0.55:
+                long_rules += 1
+        return min(1.0, long_rules / max(height * 0.015, 1.0))
+
+    def _numeric_column_score(self, col_density: np.ndarray, *, ocr_text: str) -> float:
+        lines = [line.strip() for line in re.split(r"[\r\n]+", ocr_text or "") if line.strip()]
+        numeric_lines = sum(1 for line in lines if len(re.findall(r"\d", line)) >= 3)
+        numeric_text_score = min(1.0, numeric_lines / max(len(lines), 1))
+        if col_density.size == 0:
+            return numeric_text_score
+        high_density_cols = float((col_density > max(float(col_density.mean()) * 1.4, 0.01)).mean())
+        return min(1.0, numeric_text_score * 0.65 + high_density_cols * 0.35)
+
+    def _approval_block_score(self, *, ocr_text: str, footer_score: float) -> float:
+        text = normalize_text(ocr_text or "")
+        approval_hits = sum(1 for word in ("approval", "approved", "signature", "vendor", "buyer", "승인", "결재", "서명") if word in text)
+        return min(1.0, footer_score * 0.35 + min(1.0, approval_hits / 3.0) * 0.65)
+
+    def _repeated_line_pattern_score(self, line_segments: list[tuple[int, int]]) -> float:
+        if len(line_segments) < 4:
+            return 0.0
+        centers = [(start + end) / 2.0 for start, end in line_segments]
+        gaps = [centers[index + 1] - centers[index] for index in range(len(centers) - 1)]
+        if not gaps:
+            return 0.0
+        avg_gap = sum(gaps) / len(gaps)
+        variance = sum((gap - avg_gap) ** 2 for gap in gaps) / len(gaps)
+        regularity = 1.0 / (1.0 + math.sqrt(variance) / max(avg_gap, 1.0))
+        return min(1.0, regularity * min(1.0, len(line_segments) / 18.0))
+
+    def _chart_presence_score(self, *, image_area_ratio: float, block_count: int) -> float:
+        if image_area_ratio <= 0:
+            return 0.0
+        block_factor = 1.0 if block_count >= 3 else 0.55
+        return min(1.0, image_area_ratio * 2.0 * block_factor)
+
     def _seal_area_score(self, features: dict[str, Any]) -> float:
         whitespace = float(features.get("whitespace_ratio", 0.0))
         centered = float(features.get("centered_title_score", 0.0))
         return min(1.0, whitespace * 0.5 + centered * 0.3)
+
+    def _signature_area_score(self, features: dict[str, Any]) -> float:
+        footer = float(features.get("footer_pattern_score", 0.0))
+        approval = float(features.get("approval_block_score", 0.0))
+        whitespace = float(features.get("whitespace_ratio", 0.0))
+        return min(1.0, footer * 0.35 + approval * 0.45 + whitespace * 0.2)
 
     def _references_last_page_score(self, ocr_text: str, last_page_features: dict[str, Any]) -> float:
         text = normalize_text(ocr_text or "")

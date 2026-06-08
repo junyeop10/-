@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 import os
 from typing import Any
 
+import numpy as np
+
 from src.text_cleaner import tokenize_text
 
 
@@ -18,11 +20,25 @@ class ClusterCandidate:
 
 
 class ClusterCandidateFinder:
-    """Find small, conservative pending category candidates."""
+    """Find small, conservative pending category candidates.
 
-    def __init__(self, *, min_cluster_size: int = 3, max_candidates: int = 5) -> None:
+    Preferred flow is embedding generation followed by HDBSCAN. The legacy
+    token bucket fallback only exists to keep candidate review available when
+    optional ML dependencies or embedding models are unavailable.
+    """
+
+    def __init__(
+        self,
+        *,
+        min_cluster_size: int = 3,
+        max_candidates: int = 5,
+        embedder: Any | None = None,
+        repository: Any | None = None,
+    ) -> None:
         self.min_cluster_size = min_cluster_size
         self.max_candidates = max_candidates
+        self.embedder = embedder
+        self.repository = repository
 
     def find_candidates(self, rows: list[dict[str, Any]]) -> list[ClusterCandidate]:
         eligible = [
@@ -34,38 +50,64 @@ class ClusterCandidateFinder:
         if len(eligible) < self.min_cluster_size:
             return []
 
-        try:
-            os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
-            from sklearn.cluster import MiniBatchKMeans
-            from sklearn.feature_extraction.text import TfidfVectorizer
-        except Exception:
-            return self._fallback_candidates(eligible)
-
-        texts = [str(row.get("compressed_text") or row.get("text") or row.get("file_name") or "") for row in eligible]
-        try:
-            vectorizer = TfidfVectorizer(analyzer="word", ngram_range=(1, 2), min_df=1, max_features=1500)
-            matrix = vectorizer.fit_transform(texts)
-            k = min(max(2, len(eligible) // self.min_cluster_size), self.max_candidates, len(eligible))
-            if k < 2:
-                return []
-            model = MiniBatchKMeans(n_clusters=k, random_state=42, n_init=5)
-            labels = model.fit_predict(matrix)
-        except Exception:
+        labels, source = self._embedding_hdbscan_labels(eligible)
+        if labels is None:
             return self._fallback_candidates(eligible)
 
         candidates: list[ClusterCandidate] = []
         for label in sorted(set(int(item) for item in labels)):
+            if label < 0:
+                continue
             group = [row for row, row_label in zip(eligible, labels) if int(row_label) == label]
             if len(group) < self.min_cluster_size:
                 continue
-            candidate = self._build_candidate(group, source=f"minibatch_kmeans:{label}")
+            candidate = self._build_candidate(group, source=f"{source}:{label}")
             if candidate is not None:
                 candidates.append(candidate)
         if not candidates and len(eligible) >= self.min_cluster_size:
-            fallback = self._build_candidate(eligible, source="minibatch_kmeans:fallback_all")
+            fallback = self._build_candidate(eligible, source=f"{source}:fallback_all")
             if fallback is not None:
                 candidates.append(fallback)
         return candidates[: self.max_candidates]
+
+    def _embedding_hdbscan_labels(self, rows: list[dict[str, Any]]) -> tuple[list[int] | None, str]:
+        texts = [str(row.get("compressed_text") or row.get("text") or row.get("file_name") or "") for row in rows]
+        file_hashes = [str(row.get("file_hash") or row.get("file_id") or "") for row in rows]
+        matrix: np.ndarray | None = None
+        source = "embedding_hdbscan"
+        try:
+            if self.embedder is not None:
+                embeddings = self.embedder.encode_many(
+                    texts,
+                    repository=self.repository,
+                    file_hashes=file_hashes,
+                    text_kind="cluster_candidate",
+                    embedding_version="2.1-cluster-candidate",
+                )
+                matrix = np.asarray(embeddings, dtype=np.float32)
+                source = "embedding_hdbscan"
+            else:
+                os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
+                from sklearn.feature_extraction.text import TfidfVectorizer
+
+                vectorizer = TfidfVectorizer(analyzer="word", ngram_range=(1, 2), min_df=1, max_features=1500)
+                matrix = vectorizer.fit_transform(texts).toarray().astype(np.float32)
+                source = "tfidf_embedding_hdbscan"
+
+            import hdbscan
+
+            model = hdbscan.HDBSCAN(min_cluster_size=self.min_cluster_size, min_samples=1, metric="euclidean")
+            return [int(label) for label in model.fit_predict(matrix)], source
+        except Exception:
+            if matrix is None:
+                return None, "unavailable"
+            try:
+                from sklearn.cluster import DBSCAN
+
+                model = DBSCAN(eps=0.72, min_samples=self.min_cluster_size, metric="cosine")
+                return [int(label) for label in model.fit_predict(matrix)], f"{source}_dbscan_fallback"
+            except Exception:
+                return None, "unavailable"
 
     def _fallback_candidates(self, rows: list[dict[str, Any]]) -> list[ClusterCandidate]:
         buckets: dict[str, list[dict[str, Any]]] = {}

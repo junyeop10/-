@@ -28,6 +28,8 @@ class LayoutFeatureExtractorTest(unittest.TestCase):
         self.assertGreater(result.features["receipt_pattern_score"], 0.45)
         self.assertTrue(result.features["total_keyword_exists"])
         self.assertGreater(result.features["numeric_line_density"], 0.4)
+        self.assertIn("repeated_line_pattern_score", result.features)
+        self.assertGreaterEqual(result.features["numeric_column_score"], 0.0)
 
     def test_certificate_like_layout_detects_centered_header_and_whitespace(self) -> None:
         image = _white(700, 500)
@@ -54,6 +56,7 @@ class LayoutFeatureExtractorTest(unittest.TestCase):
         self.assertEqual(result.features["portrait_or_landscape"], "landscape")
         self.assertGreater(result.features["slide_like_layout_score"], 0.45)
         self.assertGreater(result.features["bullet_density"], 0.4)
+        self.assertIn("chart_presence_score", result.features)
 
     def test_paper_like_layout_scores_dense_two_column_page(self) -> None:
         image = _white(700, 500)

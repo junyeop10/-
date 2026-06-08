@@ -17,9 +17,17 @@ data/*.h5
 data/*.lock
 data/manifests/
 data/snapshots/
+data/evidence_cache/
 tests_runtime/
 tmp*/
 scratch/
+
+# Bundled FastAPI backend runtime/private files
+backend/.env
+backend/cache.db
+backend/uploads/
+backend/**/__pycache__/
+backend/**/*.pyc
 
 # User documents and private inputs
 input_files/*

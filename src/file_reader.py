@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.hwp_reader import extract_hwp_text, extract_hwpx_text
 from src.office_reader import extract_docx_text, extract_pptx_text, extract_xlsx_text
 from src.pdf_reader import extract_pdf_text
 from src.text_cleaner import build_sampled_text
 
 
-SUPPORTED_SUFFIXES = {".txt", ".pdf", ".docx", ".xlsx", ".pptx"}
+SUPPORTED_SUFFIXES = {".txt", ".pdf", ".docx", ".xlsx", ".pptx", ".hwp", ".hwpx"}
 
 
 def ensure_input_directory(input_dir: str | Path) -> Path:
@@ -85,6 +86,18 @@ def extract_text_from_file(
         )
     if file_path.suffix.lower() == ".pptx":
         return extract_pptx_text(
+            file_path,
+            total_limit=total_limit,
+            part_limit=part_limit,
+        )
+    if file_path.suffix.lower() == ".hwp":
+        return extract_hwp_text(
+            file_path,
+            total_limit=total_limit,
+            part_limit=part_limit,
+        )
+    if file_path.suffix.lower() == ".hwpx":
+        return extract_hwpx_text(
             file_path,
             total_limit=total_limit,
             part_limit=part_limit,

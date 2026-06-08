@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from src.layout_features import DocumentLayoutFeatureExtractor
+from src.hash_utils import compute_raw_text_hash
 from src.text_cleaner import build_sampled_text, normalize_text, tokenize_text
 
 
-FEATURE_EXTRACTOR_VERSION = "2.2"
+FEATURE_EXTRACTOR_VERSION = "2.3"
 
 
 @dataclass
@@ -75,6 +75,8 @@ class DocumentFeatureExtractor:
         )
         layout_features = self._layout_features(file_path=file_path, text=normalized_text)
         text_stats = self._text_stats(normalized_text)
+        structural_features.update(self._pattern_scores(normalized_text, raw_lines=lines))
+        text_stats.update(self._ocr_quality_features(text or ""))
         compressed_text = self._build_compressed_text(
             file_name=file_name,
             title=title,
@@ -83,7 +85,7 @@ class DocumentFeatureExtractor:
             structural_features=structural_features,
             layout_features=layout_features,
         )
-        compressed_text_hash = hashlib.sha256(compressed_text.encode("utf-8")).hexdigest()
+        compressed_text_hash = compute_raw_text_hash(compressed_text)
         filename_features["title_candidate"] = title
         filename_features["headings"] = headings
 
@@ -148,6 +150,47 @@ class DocumentFeatureExtractor:
             "average_sentence_length": round(avg_sentence_length, 2),
         }
 
+    def _pattern_scores(self, text: str, *, raw_lines: list[str]) -> dict[str, Any]:
+        lowered = text.lower()
+        clause_matches = re.findall(r"(제\s*\d+\s*조|\barticle\s+\d+)", text, flags=re.IGNORECASE)
+        legal_terms = ("계약", "갑", "을", "손해배상", "비밀유지", "준거법", "해지", "contract", "confidentiality")
+        research_terms = ("abstract", "method", "results", "references", "doi", "citation")
+        report_terms = ("요약", "현황", "분석", "결론", "성과", "summary", "analysis", "conclusion")
+        resume_terms = ("경력", "학력", "기술", "experience", "education", "skills", "email", "phone")
+        headings = self._pick_headings(raw_lines)
+        token_count = max(len(tokenize_text(text)), 1)
+        return {
+            "clause_pattern_score": round(min(1.0, len(clause_matches) / 6.0), 4),
+            "legal_term_density": round(sum(lowered.count(term.lower()) for term in legal_terms) / token_count, 4),
+            "research_structure_score": round(sum(1 for term in research_terms if term in lowered) / len(research_terms), 4),
+            "report_structure_score": round(sum(1 for term in report_terms if term.lower() in lowered) / len(report_terms), 4),
+            "contact_pattern_score": round(
+                min(
+                    1.0,
+                    (1.0 if re.search(r"[\w.+-]+@[\w.-]+\.\w+", text) else 0.0) * 0.45
+                    + (1.0 if re.search(r"(\+?\d[\d\s-]{7,}\d)", text) else 0.0) * 0.35
+                    + (sum(1 for term in resume_terms if term in lowered) / len(resume_terms)) * 0.2,
+                ),
+                4,
+            ),
+            "heading_density": round(len(headings) / max(len(raw_lines), 1), 4),
+        }
+
+    def _ocr_quality_features(self, raw_text: str) -> dict[str, Any]:
+        chars = [char for char in raw_text if not char.isspace()]
+        unreadable = sum(1 for char in chars if char in {"�", "□", "▯"})
+        symbols = sum(1 for char in chars if not char.isalnum() and not ("\uac00" <= char <= "\ud7a3"))
+        unreadable_ratio = unreadable / max(len(chars), 1)
+        symbol_noise_ratio = symbols / max(len(chars), 1)
+        low_quality_scan_score = min(1.0, unreadable_ratio * 2.5 + max(0.0, symbol_noise_ratio - 0.25) * 1.5)
+        return {
+            "ocr_text_length": len(raw_text or ""),
+            "ocr_confidence_mean": 0.0,
+            "unreadable_ratio": round(unreadable_ratio, 4),
+            "symbol_noise_ratio": round(symbol_noise_ratio, 4),
+            "low_quality_scan_score": round(low_quality_scan_score, 4),
+        }
+
     def _build_compressed_text(
         self,
         *,
@@ -173,6 +216,12 @@ class DocumentFeatureExtractor:
                 "has_doi",
                 "contract_terms_count",
                 "receipt_terms_count",
+                "clause_pattern_score",
+                "legal_term_density",
+                "research_structure_score",
+                "report_structure_score",
+                "contact_pattern_score",
+                "heading_density",
             }
         )
         layout_summary = " ".join(
@@ -189,6 +238,14 @@ class DocumentFeatureExtractor:
                 "dense_text_score",
                 "two_column_score",
                 "image_area_ratio",
+                "header_block_score",
+                "footer_pattern_score",
+                "signature_area_score",
+                "chart_presence_score",
+                "section_divider_score",
+                "numeric_column_score",
+                "approval_block_score",
+                "repeated_line_pattern_score",
             }
         )
         parts = [

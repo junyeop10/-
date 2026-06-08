@@ -7,7 +7,7 @@ import json
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -20,12 +20,14 @@ from src.classifier import (
     get_processing_method_label,
     get_processing_trace_text,
 )
+from src.cluster_projection import build_cluster_projection, render_cluster_projection_html
 from src.config import DEFAULT_CONFIG_PATH, AppConfig, default_config, load_app_config
 from src.document_features import DocumentFeatureExtractor
 from src.embedding_repository import (
     create_embedding_repository,
     migrate_sqlite_embedding_cache_to_hdf5,
 )
+from src.evidence_pipeline import build_document_evidence, load_cached_document_evidence
 from src.fast_worker import process_file_fast
 from src.file_reader import discover_supported_files, ensure_input_directory, extract_text_from_file
 from src.hash_utils import compute_xxhash64
@@ -47,11 +49,20 @@ from src.ocr_support import (
 from src.performance import build_file_latency_analysis
 from src.recovery import create_safety_snapshot
 from src.rule_classifier import RuleBasedClassifier, build_rule_input_text, score_text_with_rules
+from src.server_client import RemoteServerError, build_remote_client
 from src.storage import ClassificationRepository
 from src.taxonomy import Taxonomy, load_taxonomy
 from src.text_cleaner import normalize_text
-from src.type_classifier import TypeClassifier
+from src.unknown_pool import decide_unknown_pool_entry
+from src.unsupervised_clustering import ClusterInput, SklearnTextClusterer, build_category_name_proposal_payload
 from src.vectorizer import SentenceTransformerEmbedder
+from src.zip_categories_adapter import (
+    ZIP_PIPELINE_VERSION,
+    ZIP_READER_EXTENDED,
+    ZIP_READER_ORIGINAL,
+    build_zip_original_evidence,
+    run_zip_categories_pipeline,
+)
 
 
 FAST_TARGET_SECONDS = 10.0
@@ -112,6 +123,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     classify_parser.add_argument("--use-llm", action="store_true", help="Use a local Ollama LLM for ambiguous files")
     classify_parser.add_argument("--llm-model", default=DEFAULT_OLLAMA_MODEL, help="Ollama model name")
+    classify_parser.add_argument("--output", default="outputs", help="Output folder for cluster pipeline JSON artifacts")
+    classify_parser.add_argument(
+        "--reader-mode",
+        choices=[ZIP_READER_EXTENDED, ZIP_READER_ORIGINAL],
+        default=ZIP_READER_EXTENDED,
+        help="Text reader: extended keeps OCR/PPTX/HWP support; zip_original reproduces the ZIP reader",
+    )
+    classify_parser.add_argument("--min-cluster-size", type=int, default=3, help="Deprecated: ZIP flow uses min_cluster_size=3")
+    classify_parser.add_argument("--min-samples", type=int, default=None, help="Deprecated: ZIP flow uses min_samples=None")
+    classify_parser.add_argument(
+        "--cluster-selection-method",
+        choices=["eom", "leaf"],
+        default=None,
+        help="HDBSCAN cluster selection method; leaf creates finer discovery clusters",
+    )
+    classify_parser.add_argument(
+        "--no-normalize-embeddings",
+        action="store_true",
+        help="Disable L2 normalization before HDBSCAN",
+    )
+    classify_parser.add_argument("--representatives", type=int, default=5, help="Representative documents per cluster")
+    classify_parser.add_argument("--reducer", choices=["none", "pca", "umap"], default=None, help="Reducer before HDBSCAN")
+    classify_parser.add_argument("--no-ocr", action="store_true", help="Disable OCR fallback in the cluster pipeline")
+    classify_parser.add_argument("--evidence-workers", type=int, default=MAX_OCR_WORKERS, help="Parallel workers for evidence/OCR preparation")
+    classify_parser.add_argument(
+        "--include-rule-signals",
+        action="store_true",
+        help="Include legacy rule keyword signals in evidence; disabled by default to avoid category-label leakage",
+    )
+    classify_parser.add_argument(
+        "--legacy-final-classify",
+        action="store_true",
+        help="Run the previous final-category classifier instead of the evidence clustering flow",
+    )
     classify_parser.set_defaults(func=handle_classify)
 
     suggest_parser = subparsers.add_parser("suggest-rules", parents=[common_parent], help="Suggest rules")
@@ -138,8 +183,36 @@ def build_parser() -> argparse.ArgumentParser:
     deactivate_profile_parser.add_argument("--profile-id", type=int, required=True, help="Profile id")
     deactivate_profile_parser.set_defaults(func=handle_deactivate_category_profile)
 
+    backfill_profile_parser = subparsers.add_parser(
+        "backfill-category-profile-signals",
+        parents=[common_parent],
+        help="Backfill missing profile_signals_json for profiles matching default seed types",
+    )
+    backfill_profile_parser.add_argument("--dry-run", action="store_true", help="Preview changes without updating the DB")
+    backfill_profile_parser.set_defaults(func=handle_backfill_category_profile_signals)
+
+    expand_profile_parser = subparsers.add_parser(
+        "expand-category-profile-training",
+        parents=[common_parent],
+        help="Increase synthetic training row counts for known category profiles",
+    )
+    expand_profile_parser.add_argument("--synthetic-count", type=int, default=12, help="Minimum synthetic rows per known profile")
+    expand_profile_parser.add_argument("--dry-run", action="store_true", help="Preview changes without updating the DB")
+    expand_profile_parser.set_defaults(func=handle_expand_category_profile_training)
+
     debug_training_parser = subparsers.add_parser("debug-training-sources", parents=[common_parent], help="Inspect TypeClassifier training sources")
     debug_training_parser.set_defaults(func=handle_debug_training_sources)
+
+    cluster_unknown_parser = subparsers.add_parser(
+        "cluster-unknown-pool",
+        parents=[common_parent],
+        help="Run offline unsupervised clustering on pending unknown documents",
+    )
+    cluster_unknown_parser.add_argument("--limit", type=int, default=500, help="Maximum unknown rows to cluster")
+    cluster_unknown_parser.add_argument("--eps", type=float, default=0.72, help="DBSCAN fallback eps value")
+    cluster_unknown_parser.add_argument("--min-samples", type=int, default=3, help="HDBSCAN min_samples value")
+    cluster_unknown_parser.add_argument("--min-cluster-size", type=int, default=3, help="HDBSCAN min_cluster_size value")
+    cluster_unknown_parser.set_defaults(func=handle_cluster_unknown_pool)
 
     preview_move_parser = subparsers.add_parser("preview_move", parents=[common_parent], help="Stage a safe move preview")
     preview_move_parser.add_argument("--limit", type=int, default=None, help="Preview only the latest N files")
@@ -229,6 +302,28 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot_parser.add_argument("--reason", default="manual_snapshot", help="Snapshot reason")
     snapshot_parser.set_defaults(func=handle_create_snapshot)
 
+    server_upload_parser = subparsers.add_parser("server-upload", parents=[common_parent], help="Upload files to the FastAPI classification server")
+    server_upload_parser.add_argument("paths", nargs="+", help="Files or folders to upload")
+    server_upload_parser.add_argument("--wait", action="store_true", help="Poll until the remote job completes")
+    server_upload_parser.add_argument("--timeout", type=float, default=None, help="Optional wait timeout in seconds")
+    server_upload_parser.set_defaults(func=handle_server_upload)
+
+    server_result_parser = subparsers.add_parser("server-result", parents=[common_parent], help="Fetch a FastAPI server job result")
+    server_result_parser.add_argument("job_id", help="Remote job id returned by server-upload")
+    server_result_parser.set_defaults(func=handle_server_result)
+
+    server_watch_parser = subparsers.add_parser("server-watch", parents=[common_parent], help="Listen to FastAPI server WebSocket progress")
+    server_watch_parser.add_argument("job_id", help="Remote job id returned by server-upload")
+    server_watch_parser.add_argument("--idle-timeout", type=float, default=30.0, help="Stop if no WebSocket message arrives within this many seconds")
+    server_watch_parser.set_defaults(func=handle_server_watch)
+
+    server_confirm_parser = subparsers.add_parser("server-confirm", parents=[common_parent], help="Send user confirmation to the FastAPI server")
+    server_confirm_parser.add_argument("job_id", help="Remote job id returned by server-upload")
+    server_confirm_parser.add_argument("--file", dest="filename", required=True, help="Filename exactly as returned by server-result")
+    server_confirm_parser.add_argument("--category", required=True, help="User-confirmed backend category value")
+    server_confirm_parser.add_argument("--folder-description", default="", help="Optional folder/category description")
+    server_confirm_parser.set_defaults(func=handle_server_confirm)
+
     return parser
 
 
@@ -245,6 +340,10 @@ def handle_init_db(args: argparse.Namespace) -> None:
 
 def handle_classify(args: argparse.Namespace) -> None:
     """Classify supported files from the input folder."""
+    if not getattr(args, "legacy_final_classify", False):
+        handle_cluster_classify(args)
+        return
+
     total_start = time.perf_counter()
     config = load_runtime_config(args)
     repository = build_repository(args.db, config)
@@ -270,11 +369,7 @@ def handle_classify(args: argparse.Namespace) -> None:
         use_embedding_for_no_rule=not args.fast,
         low_rule_confidence_threshold=FAST_LOW_RULE_CONFIDENCE_THRESHOLD if args.fast else 0.20,
         feature_extractor=DocumentFeatureExtractor(version=config.features.extractor_version),
-        type_classifier=TypeClassifier(
-            version=config.ml.type_classifier_version,
-            min_examples=config.ml.min_training_examples,
-            filename_weight=config.ml.filename_weight,
-        ),
+        ml_enabled=False,
     )
 
     if args.fast:
@@ -306,6 +401,348 @@ def handle_classify(args: argparse.Namespace) -> None:
         )
 
     print_performance_summary(summary)
+
+
+def handle_cluster_classify(args: argparse.Namespace) -> None:
+    """Run the evidence -> embedding -> HDBSCAN flow as the default classify mode."""
+    config = load_runtime_config(args)
+    repository = build_repository(args.db, config)
+    repository.initialize_database()
+    rules: list[dict[str, Any]] = []
+    if bool(getattr(args, "include_rule_signals", False)):
+        repository.seed_rules_from_categories(load_categories(Path(args.categories)))
+        rules = serialize_active_rules(repository)
+
+    input_dir = Path(args.input_dir)
+    ensure_input_directory(input_dir)
+    files = discover_supported_files(input_dir)
+    if not files:
+        print(f"No supported files found: {input_dir.resolve()}")
+        return
+
+    print(f"Cluster classify start: {len(files)} files")
+    evidence_start = time.perf_counter()
+    if str(getattr(args, "reader_mode", ZIP_READER_EXTENDED)) == ZIP_READER_ORIGINAL:
+        evidence_documents = [build_zip_original_evidence(file_path) for file_path in files]
+    else:
+        evidence_documents = build_cluster_evidence_parallel(
+            files=files,
+            rules=rules,
+            min_text_chars=max(0, int(getattr(args, "ocr_min_chars", DEFAULT_OCR_MIN_CHARS))),
+            ocr_enabled=config.ocr.enabled and not bool(getattr(args, "no_ocr", False)),
+            ocr_max_pages=config.ocr.max_pages,
+            ocr_cache_path=args.db,
+            ocr_cache_enabled=config.ocr.cache_enabled,
+            evidence_cache_dir=config.features.evidence_cache_dir,
+            evidence_cache_enabled=config.features.evidence_cache_enabled,
+            evidence_workers=max(1, int(getattr(args, "evidence_workers", MAX_OCR_WORKERS))),
+        )
+    evidence_elapsed = time.perf_counter() - evidence_start
+    print(f"Evidence ready: {len(evidence_documents)} files in {evidence_elapsed:.2f}s")
+    evidence_timing_summary = summarize_evidence_timings(evidence_documents)
+    print_evidence_timing_summary(evidence_timing_summary)
+    documents = [
+        {
+            "index": index,
+            "file_path": evidence["file_path"],
+            "filename": evidence["filename"],
+            "file_hash": evidence["file_hash"],
+            "evidence": evidence,
+        }
+        for index, evidence in enumerate(evidence_documents)
+    ]
+    print(f"ZIP fixed-category pipeline start: {len(documents)} documents")
+    embedding_start = time.perf_counter()
+    categories_result = run_zip_categories_pipeline(
+        documents,
+        embedder=build_embedder(config, model_name=args.model_name),
+        repository=repository,
+        config=config,
+    )
+    embedding_elapsed = time.perf_counter() - embedding_start
+    documents = list(categories_result["documents"])
+    cluster_result = categories_result["cluster_result"]
+    cluster_ids = [int(cluster_id) for cluster_id in cluster_result.get("cluster_ids", [])]
+    clustering_vectors = list(cluster_result.get("reduced_vectors", []))
+    clustering_enabled = bool(cluster_result.get("enabled", True))
+    noise_documents = [
+        document
+        for document in documents
+        if clustering_enabled and int(document.get("cluster_id", -1)) == -1
+    ]
+    cluster_payloads = [
+        {
+            "category": category,
+            "document_count": sum(1 for document in documents if document.get("category") == category),
+            "documents": [
+                document["filename"]
+                for document in documents
+                if document.get("category") == category
+            ],
+        }
+        for category in categories_result["categories"]
+    ]
+    cluster_projection = build_cluster_projection(
+        documents,
+        clustering_vectors,
+        cluster_ids,
+        probabilities=[float(value) for value in cluster_result.get("probabilities", [])],
+    )
+
+    output_dir = Path(getattr(args, "output", "outputs"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    write_json(output_dir / "cluster_evidence.json", documents)
+    write_json(output_dir / "cluster_payloads.json", cluster_payloads)
+    write_json(output_dir / "noise_documents.json", noise_documents)
+    write_json(output_dir / "cluster_projection.json", cluster_projection)
+    write_text(output_dir / "cluster_projection.html", render_cluster_projection_html(cluster_projection))
+    write_json(
+        output_dir / "cluster_run_summary.json",
+        {
+            "input_dir": str(input_dir),
+            "reader_mode": str(getattr(args, "reader_mode", ZIP_READER_EXTENDED)),
+            "file_count": len(files),
+            "cluster_result": cluster_result,
+            "category_count": len(categories_result["categories"]),
+            "cluster_count": len({cluster_id for cluster_id in cluster_ids if cluster_id != -1}),
+            "noise_count": len(noise_documents),
+            "supplemental_clustering_status": str(cluster_result.get("status", "unknown")),
+            "projection_file": str(output_dir / "cluster_projection.html"),
+            "api_call_performed": False,
+            "legacy_final_classify": False,
+            "pipeline_version": ZIP_PIPELINE_VERSION,
+            "feedback_examples_used": int(categories_result.get("feedback_examples_used", 0)),
+            "evidence_elapsed": round(evidence_elapsed, 3),
+            "embedding_elapsed": round(embedding_elapsed, 3),
+            "evidence_timing_summary": evidence_timing_summary,
+        },
+    )
+
+    print("Cluster classify complete")
+    print(f"- files: {len(files)}")
+    print(f"- fixed_categories: {len(categories_result['categories'])}")
+    print(f"- clusters: {len({cluster_id for cluster_id in cluster_ids if cluster_id != -1})}")
+    print(f"- noise_documents: {len(noise_documents)}")
+    print(f"- supplemental_clustering: {cluster_result.get('status', 'unknown')}")
+    print(f"- api_call_performed: false")
+    print(f"- output: {output_dir.resolve()}")
+    print(f"  - {output_dir / 'cluster_evidence.json'}")
+    print(f"  - {output_dir / 'cluster_payloads.json'}")
+    print(f"  - {output_dir / 'noise_documents.json'}")
+    print(f"  - {output_dir / 'cluster_projection.html'}")
+    print(f"  - {output_dir / 'cluster_run_summary.json'}")
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def summarize_evidence_timings(evidence_documents: list[dict[str, Any]]) -> dict[str, Any]:
+    stage_totals: dict[str, float] = {}
+    slow_files = []
+    status_counts: dict[str, int] = {}
+    ocr_cache_hits = 0
+    evidence_cache_hits = 0
+    for evidence in evidence_documents:
+        status = str(evidence.get("extraction_status", "unknown"))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if bool(evidence.get("ocr_cache_hit")):
+            ocr_cache_hits += 1
+        if bool(evidence.get("evidence_cache_hit")):
+            evidence_cache_hits += 1
+        timings = evidence.get("timings", {})
+        if not isinstance(timings, dict):
+            continue
+        for key, value in timings.items():
+            try:
+                stage_totals[key] = stage_totals.get(key, 0.0) + float(value)
+            except (TypeError, ValueError):
+                continue
+        slow_files.append(
+            {
+                "filename": evidence.get("filename", ""),
+                "status": status,
+                "total": float(timings.get("total", 0.0) or 0.0),
+                "extract_text": float(timings.get("extract_text", 0.0) or 0.0),
+                "feature_initial": float(timings.get("feature_initial", 0.0) or 0.0),
+                "ocr": float(timings.get("ocr", 0.0) or 0.0),
+                "rule_signals": float(timings.get("rule_signals", 0.0) or 0.0),
+                "file_hash": float(timings.get("file_hash", 0.0) or 0.0),
+            }
+        )
+    return {
+        "status_counts": status_counts,
+        "ocr_cache_hits": ocr_cache_hits,
+        "evidence_cache_hits": evidence_cache_hits,
+        "stage_totals": {key: round(value, 3) for key, value in sorted(stage_totals.items())},
+        "slow_files": sorted(slow_files, key=lambda item: item["total"], reverse=True)[:10],
+    }
+
+
+def print_evidence_timing_summary(summary: dict[str, Any]) -> None:
+    stage_totals = summary.get("stage_totals", {})
+    status_counts = summary.get("status_counts", {})
+    ocr_cache_hits = int(summary.get("ocr_cache_hits", 0) or 0)
+    evidence_cache_hits = int(summary.get("evidence_cache_hits", 0) or 0)
+    slow_files = summary.get("slow_files", [])
+    print(f"Evidence statuses: {json.dumps(status_counts, ensure_ascii=False)}")
+    if ocr_cache_hits:
+        print(f"OCR cache hits: {ocr_cache_hits}")
+    if evidence_cache_hits:
+        print(f"Evidence cache hits: {evidence_cache_hits}")
+    if stage_totals:
+        stage_text = ", ".join(f"{key}={value:.2f}s" for key, value in stage_totals.items())
+        print(f"Evidence stage totals: {stage_text}")
+    if slow_files:
+        print("Slowest evidence files:")
+        for item in slow_files[:5]:
+            print(
+                f"  - {item['filename']} total={item['total']:.2f}s "
+                f"extract={item['extract_text']:.2f}s feature={item['feature_initial']:.2f}s "
+                f"ocr={item['ocr']:.2f}s rules={item['rule_signals']:.2f}s hash={item['file_hash']:.2f}s "
+                f"status={item['status']}"
+            )
+
+
+def build_cluster_evidence_parallel(
+    *,
+    files: list[Path],
+    rules: list[dict[str, Any]],
+    min_text_chars: int,
+    ocr_enabled: bool,
+    ocr_max_pages: int,
+    ocr_cache_path: str | Path | None,
+    ocr_cache_enabled: bool,
+    evidence_cache_dir: str | Path | None,
+    evidence_cache_enabled: bool,
+    evidence_workers: int,
+) -> list[dict[str, Any]]:
+    """Build evidence objects in parallel so OCR-heavy files do not block the whole run."""
+    if not files:
+        return []
+    max_workers = max(1, min(len(files), evidence_workers))
+    if len(files) <= max(4, evidence_workers * 2):
+        max_workers = 1
+    results: list[dict[str, Any] | None] = [None] * len(files)
+    pending_indices = list(range(len(files)))
+    if evidence_cache_enabled and evidence_cache_dir:
+        pending_indices = []
+        for index, file_path in enumerate(files):
+            cached = load_cached_document_evidence(
+                file_path,
+                rules=rules,
+                min_text_chars=min_text_chars,
+                ocr_enabled=ocr_enabled,
+                ocr_max_pages=ocr_max_pages,
+                evidence_cache_dir=evidence_cache_dir,
+            )
+            if cached is None:
+                pending_indices.append(index)
+            else:
+                results[index] = cached
+        if not pending_indices:
+            print(f"[evidence-mode] cache-only hits={len(files)}")
+            return [result for result in results if result is not None]
+        print(f"[evidence-cache] hits={len(files) - len(pending_indices)} misses={len(pending_indices)}")
+    pending_files = [files[index] for index in pending_indices]
+    max_workers = max(1, min(len(pending_files), evidence_workers))
+    if len(pending_files) <= max(4, evidence_workers * 2):
+        max_workers = 1
+    if max_workers == 1:
+        print("[evidence-mode] serial")
+        for completed, index in enumerate(pending_indices, start=1):
+            file_path = files[index]
+            results[index] = _build_cluster_evidence_worker(
+                str(file_path),
+                rules,
+                min_text_chars,
+                ocr_enabled,
+                ocr_max_pages,
+                str(ocr_cache_path) if ocr_cache_path else "",
+                ocr_cache_enabled,
+                str(evidence_cache_dir) if evidence_cache_dir else "",
+                evidence_cache_enabled,
+            )
+            print(f"[evidence] {completed}/{len(pending_files)} {file_path.name}")
+        return [result for result in results if result is not None]
+
+    print(f"[evidence-mode] threaded workers={max_workers}")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _build_cluster_evidence_worker,
+                str(file_path),
+                rules,
+                min_text_chars,
+                ocr_enabled,
+                ocr_max_pages,
+                str(ocr_cache_path) if ocr_cache_path else "",
+                ocr_cache_enabled,
+                str(evidence_cache_dir) if evidence_cache_dir else "",
+                evidence_cache_enabled,
+            ): index
+            for index, file_path in ((index, files[index]) for index in pending_indices)
+        }
+        completed = 0
+        for future in as_completed(futures):
+            index = futures[future]
+            file_path = files[index]
+            completed += 1
+            try:
+                results[index] = future.result()
+                status = str(results[index].get("extraction_status", "unknown")) if results[index] else "failed"
+                print(f"[evidence] {completed}/{len(files)} {file_path.name} status={status}")
+            except Exception as error:
+                print(f"[evidence-failed] {file_path.name}: {error}")
+                results[index] = {
+                    "file_path": str(file_path),
+                    "filename": file_path.name,
+                    "file_hash": "",
+                    "extracted_text_length": 0,
+                    "extraction_status": "api_reader_required",
+                    "status_flags": ["evidence_insufficient", "api_reader_required"],
+                    "extraction_error": str(error),
+                    "filename_tokens": [],
+                    "top_tokens": [],
+                    "sampled_text": "",
+                    "compressed_preview": "",
+                    "text_stats": {},
+                    "structural_features": {},
+                    "layout_features": {},
+                    "old_rule_signals": {"status": "failed", "keyword_signals": []},
+                    "api_reader": {"required": True, "status": "placeholder", "reason": "evidence_worker_failed"},
+                }
+    return [result for result in results if result is not None]
+
+
+def _build_cluster_evidence_worker(
+    file_path: str,
+    rules: list[dict[str, Any]],
+    min_text_chars: int,
+    ocr_enabled: bool,
+    ocr_max_pages: int,
+    ocr_cache_path: str,
+    ocr_cache_enabled: bool,
+    evidence_cache_dir: str,
+    evidence_cache_enabled: bool,
+) -> dict[str, Any]:
+    return build_document_evidence(
+        file_path,
+        rules=rules,
+        min_text_chars=min_text_chars,
+        ocr_enabled=ocr_enabled,
+        ocr_max_pages=ocr_max_pages,
+        ocr_cache_path=ocr_cache_path or None,
+        ocr_cache_enabled=ocr_cache_enabled,
+        evidence_cache_dir=evidence_cache_dir or None,
+        evidence_cache_enabled=evidence_cache_enabled,
+    )
 
 
 def process_files_fast(
@@ -609,6 +1046,7 @@ def finalize_worker_result(
         ocr_used=bool(worker_result.get("ocr_used")),
         ocr_pages=int(worker_result.get("ocr_pages", 0)),
     )
+    store_unknown_if_needed(repository, result, worker_result)
     persist_start = time.perf_counter()
     timings["total"] = timings.get("worker_time", 0.0) + (time.perf_counter() - finalize_start)
     result = attach_result_performance_profile(
@@ -753,6 +1191,7 @@ def classify_prepared_record(
         ocr_used=bool(prepared.get("ocr_used")),
         ocr_pages=int(prepared.get("ocr_pages", 0)),
     )
+    store_unknown_if_needed(repository, result, prepared)
 
     persist_start = time.perf_counter()
     result = attach_result_performance_profile(
@@ -922,6 +1361,46 @@ def apply_ocr_reasoning(
     )
 
 
+def store_unknown_if_needed(
+    repository: ClassificationRepository,
+    result: ClassificationResult,
+    prepared: dict[str, Any],
+) -> None:
+    """Save uncertain documents for offline unsupervised clustering."""
+    classifier_profile = result.processing_profile if isinstance(result.processing_profile, dict) else {}
+    score_breakdown = result.score_breakdown if isinstance(result.score_breakdown, dict) else {}
+    scores = score_breakdown.get("scores", {}) if isinstance(score_breakdown.get("scores", {}), dict) else {}
+    quality = 1.0
+    text_stats = {}
+    document_features = prepared.get("document_features")
+    if isinstance(document_features, dict):
+        text_stats = dict(document_features.get("text_stats") or {})
+        quality = 1.0 - float(text_stats.get("low_quality_scan_score", 0.0) or 0.0)
+    decision = decide_unknown_pool_entry(
+        confidence=float(result.confidence),
+        candidate_scores=result.candidate_scores,
+        review_required=bool(result.review_required),
+        text=str(prepared.get("evidence_text", "")),
+        text_quality_factor=quality,
+    )
+    if not decision.should_store:
+        return
+    text_hash = str(prepared.get("text_hash") or "")
+    if not text_hash:
+        from src.hash_utils import compute_text_hash
+
+        text_hash = compute_text_hash(str(prepared.get("evidence_text", "")))
+    repository.save_unknown_pool_entry(
+        file_hash=str(prepared.get("xxhash64", "")),
+        text_hash=text_hash,
+        cleaned_text=str(prepared.get("evidence_text", "")),
+        nearest_category=decision.nearest_category,
+        nearest_similarity=decision.nearest_similarity,
+        reason=",".join(decision.reasons),
+        embedding_ref=str(classifier_profile.get("embedding_meta", {}).get("cache_key", "")) if isinstance(classifier_profile, dict) else "",
+    )
+
+
 def attach_result_performance_profile(
     result: ClassificationResult,
     *,
@@ -979,6 +1458,8 @@ def attach_cluster_candidate_if_needed(
     finder = ClusterCandidateFinder(
         min_cluster_size=config.clustering.min_cluster_size,
         max_candidates=config.clustering.max_candidates,
+        embedder=classifier.embedder,
+        repository=repository,
     )
     rows = repository.fetch_cluster_candidate_rows()
     rows.append(
@@ -1074,10 +1555,10 @@ def print_classification_result(
     print("")
     print("=" * 48)
     print(f"file: {file_name}")
-    print(f"category: {result.large_category}/{result.middle_category or result.predicted_category}")
-    print(f"predicted_type: {result.predicted_type or result.predicted_category}")
-    print(f"type_confidence: {result.type_confidence:.3f}")
-    print(f"confidence: {result.confidence:.3f}")
+    print(f"final_category: {result.large_category}/{result.middle_category or result.predicted_category}")
+    print(f"ml_type_candidate: {result.predicted_type or 'none'}")
+    print(f"ml_type_confidence: {result.type_confidence:.3f}")
+    print(f"final_confidence: {result.confidence:.3f}")
     print(f"matched_rules: {matched_rules}")
     print(f"similarity: {similarity_text}")
     print(f"review_required: {review_text}")
@@ -1086,6 +1567,17 @@ def print_classification_result(
     if result.suggested_tags:
         tag_text = ", ".join(f"{item.get('tag')}:{float(item.get('confidence', 0.0)):.2f}" for item in result.suggested_tags)
         print(f"suggested_tags: {tag_text}")
+    evidence_counts = {
+        "semantic": len(result.semantic_evidence),
+        "layout": len(result.layout_evidence),
+        "structure": len(result.structure_evidence),
+        "ocr": len(result.ocr_evidence),
+    }
+    if any(evidence_counts.values()):
+        print(
+            "evidence_groups: "
+            + ", ".join(f"{key}={value}" for key, value in evidence_counts.items() if value)
+        )
     if result.cluster_candidate_id is not None:
         print(f"cluster_candidate_id: {result.cluster_candidate_id}")
     print(f"processing: {get_processing_trace_text(result)}")
@@ -1255,8 +1747,11 @@ def handle_list_category_profiles(args: argparse.Namespace) -> None:
         return
     print(f"training_signature: {repository.get_category_profile_training_signature()}")
     for row in rows:
+        signals = row.get("profile_signals_json", "{}")
+        signal_state = "signals=yes" if str(signals).strip() not in {"", "{}"} else "signals=no"
         print(
             f"- id={row['id']} type={row['type']} status={row['status']} "
+            f"origin={row.get('profile_origin', 'user')} {signal_state} "
             f"weight={row['weight']} synthetic_count={row['synthetic_count']}"
         )
 
@@ -1266,6 +1761,38 @@ def handle_deactivate_category_profile(args: argparse.Namespace) -> None:
     repository.initialize_database()
     updated = repository.deactivate_category_profile(args.profile_id)
     print(f"category_profile_deactivated: {updated}")
+
+
+def handle_backfill_category_profile_signals(args: argparse.Namespace) -> None:
+    repository = build_repository(args.db, load_runtime_config(args))
+    repository.initialize_database()
+    changed = repository.backfill_category_profile_signals(dry_run=args.dry_run)
+    prefix = "would_backfill" if args.dry_run else "backfilled"
+    print(f"category_profile_signals_{prefix}: {len(changed)}")
+    if not changed:
+        print("- none")
+        return
+    for row in changed:
+        print(f"- id={row['id']} type={row['type']} origin={row.get('profile_origin', 'user')}")
+
+
+def handle_expand_category_profile_training(args: argparse.Namespace) -> None:
+    repository = build_repository(args.db, load_runtime_config(args))
+    repository.initialize_database()
+    changed = repository.expand_category_profile_training_data(
+        synthetic_count=args.synthetic_count,
+        dry_run=args.dry_run,
+    )
+    prefix = "would_expand" if args.dry_run else "expanded"
+    print(f"category_profile_training_{prefix}: {len(changed)}")
+    if not changed:
+        print("- none")
+        return
+    for row in changed:
+        print(
+            f"- id={row['id']} type={row['type']} origin={row.get('profile_origin', 'user')} "
+            f"synthetic_count={row['old_synthetic_count']}->{row['new_synthetic_count']}"
+        )
 
 
 def handle_debug_training_sources(args: argparse.Namespace) -> None:
@@ -1319,7 +1846,10 @@ def handle_debug_training_sources(args: argparse.Namespace) -> None:
             print(f"  * {source}: {average:.3f}")
     else:
         print("  * none: 0.000")
+    print(f"- type_classifier_enabled: {'yes' if config.ml.enabled else 'no'}")
     print(f"- type_classifier_learnable: {'yes' if learnable else 'no'}")
+    if not config.ml.enabled:
+        print("- type_classifier_status: disabled_by_config")
     if not learnable:
         print("- learnability_reasons:")
         for reason in reasons:
@@ -1329,10 +1859,66 @@ def handle_debug_training_sources(args: argparse.Namespace) -> None:
     if not active_profiles:
         print("  * none")
     for profile in active_profiles:
+        signals = profile.get("profile_signals_json", "{}")
+        signal_state = "signals=yes" if str(signals).strip() not in {"", "{}"} else "signals=no"
         print(
             f"  * id={profile['id']} type={profile['type']} "
+            f"origin={profile.get('profile_origin', 'user')} {signal_state} "
             f"weight={profile['weight']} synthetic_count={profile['synthetic_count']}"
         )
+
+
+def handle_cluster_unknown_pool(args: argparse.Namespace) -> None:
+    config = load_runtime_config(args)
+    repository = build_repository(args.db, config)
+    repository.initialize_database()
+    rows = repository.list_unknown_pool(limit=args.limit)
+    items = [
+        ClusterInput(
+            item_id=int(row["id"]),
+            file_hash=str(row["file_hash"]),
+            text=str(row.get("cleaned_text") or row.get("summary_text") or ""),
+            metadata={
+                "nearest_category": row.get("nearest_category", ""),
+                "nearest_similarity": row.get("nearest_similarity", 0.0),
+                "reason": row.get("reason", ""),
+            },
+        )
+        for row in rows
+    ]
+    clusterer = SklearnTextClusterer(
+        eps=args.eps,
+        min_samples=args.min_samples,
+        min_cluster_size=args.min_cluster_size,
+        embedder=build_embedder(config),
+        repository=repository,
+    )
+    result = clusterer.fit_predict(items)
+    run_id = repository.save_unsupervised_cluster_run(
+        algorithm=result.algorithm,
+        parameters={
+            "eps": args.eps,
+            "min_samples": args.min_samples,
+            "min_cluster_size": args.min_cluster_size,
+            "limit": args.limit,
+            "flow": "embedding_then_hdbscan",
+        },
+        metrics=result.metrics,
+        assignments=[
+            {
+                "unknown_pool_id": assignment.item_id,
+                "cluster_id": assignment.cluster_id,
+                "score": assignment.score,
+            }
+            for assignment in result.assignments
+        ],
+    )
+    items_by_id = {item.item_id: item for item in items}
+    proposals = []
+    for cluster_id, representative_ids in result.representatives.items():
+        representatives = [items_by_id[item_id] for item_id in representative_ids if item_id in items_by_id]
+        proposals.append(build_category_name_proposal_payload(cluster_id=cluster_id, representatives=representatives))
+    print(json.dumps({"run_id": run_id, "metrics": result.metrics, "proposals": proposals}, ensure_ascii=False, indent=2))
 
 
 def handle_preview_move(args: argparse.Namespace) -> None:
@@ -1611,6 +2197,77 @@ def handle_create_snapshot(args: argparse.Namespace) -> None:
     config = load_runtime_config(args)
     manifest = create_safety_snapshot(repository=repository, config=config, reason=args.reason)
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
+
+
+def handle_server_upload(args: argparse.Namespace) -> None:
+    config = load_runtime_config(args)
+    client = build_remote_client(config)
+    files = _collect_server_upload_files([Path(value) for value in args.paths])
+    if not files:
+        print("No supported files found for remote upload.")
+        return
+    try:
+        response = client.upload_files(files)
+        print(json.dumps(response, ensure_ascii=False, indent=2))
+        job_id = str(response.get("job_id", ""))
+        if args.wait and job_id:
+            result = client.wait_for_result(
+                job_id,
+                timeout_seconds=args.timeout,
+                on_poll=lambda data: print(
+                    f"remote_status: {data.get('status', 'unknown')} "
+                    f"results={len(data.get('results', []))} review_queue={len(data.get('review_queue', []))}"
+                ),
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+    except RemoteServerError as error:
+        print(f"Remote server error: {error}", file=sys.stderr)
+
+
+def handle_server_result(args: argparse.Namespace) -> None:
+    config = load_runtime_config(args)
+    client = build_remote_client(config)
+    try:
+        print(json.dumps(client.get_result(args.job_id), ensure_ascii=False, indent=2))
+    except RemoteServerError as error:
+        print(f"Remote server error: {error}", file=sys.stderr)
+
+
+def handle_server_watch(args: argparse.Namespace) -> None:
+    config = load_runtime_config(args)
+    client = build_remote_client(config)
+    try:
+        client.listen_progress(
+            args.job_id,
+            lambda message: print(json.dumps(message, ensure_ascii=False)),
+            idle_timeout_seconds=args.idle_timeout,
+        )
+    except RemoteServerError as error:
+        print(f"Remote server error: {error}", file=sys.stderr)
+
+
+def handle_server_confirm(args: argparse.Namespace) -> None:
+    config = load_runtime_config(args)
+    client = build_remote_client(config)
+    correction = {
+        "filename": args.filename,
+        "user_category": args.category,
+        "folder_description": args.folder_description,
+    }
+    try:
+        print(json.dumps(client.confirm_job(args.job_id, [correction]), ensure_ascii=False, indent=2))
+    except RemoteServerError as error:
+        print(f"Remote server error: {error}", file=sys.stderr)
+
+
+def _collect_server_upload_files(paths: list[Path]) -> list[Path]:
+    files: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            files.extend(discover_supported_files(path))
+        elif path.is_file():
+            files.append(path)
+    return sorted({file_path.resolve() for file_path in files})
 
 
 def build_repository(db_path: str, config: AppConfig | None = None) -> ClassificationRepository:

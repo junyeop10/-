@@ -3,23 +3,41 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from src.confidence import ConfidencePolicy
+from src.document_patterns import build_evidence_groups
 from src.document_features import DocumentFeatureBundle, DocumentFeatureExtractor
 from src.feedback import build_rule_suggestions
+from src.lexical_features import (
+    build_category_profiles_from_rows,
+    compute_lexical_scores,
+    flatten_lexical_scores,
+)
 from src.models import ClassificationExplanation, HierarchyPrediction
 from src.performance import build_file_latency_analysis, normalize_stage_timings
 from src.rule_classifier import RuleBasedClassifier, build_rule_input_text
 from src.storage import ClassificationRepository
 from src.taxonomy import Taxonomy, UNCATEGORIZED
-from src.type_classifier import TypeClassifier
+from src.type_classifier import TypeClassifier, TypePrediction
 from src.vectorizer import SentenceTransformerEmbedder
 
 
 CLASSIFIER_VERSION = "2.0"
+
+BASE_SCORE_WEIGHTS = {
+    "rule": 0.25,
+    "embedding": 0.25,
+    "lexical": 0.25,
+    "feedback": 0.10,
+    "layout": 0.07,
+    "filename": 0.05,
+    "metadata": 0.02,
+    "duplicate": 0.01,
+}
 
 
 @dataclass
@@ -59,7 +77,15 @@ class ClassificationResult:
     suggested_tags: list[dict[str, Any]] = field(default_factory=list)
     rule_evidence: dict[str, Any] = field(default_factory=dict)
     ml_evidence: dict[str, Any] = field(default_factory=dict)
+    semantic_evidence: list[dict[str, Any]] = field(default_factory=list)
+    layout_evidence: list[dict[str, Any]] = field(default_factory=list)
+    structure_evidence: list[dict[str, Any]] = field(default_factory=list)
+    ocr_evidence: list[dict[str, Any]] = field(default_factory=list)
     cluster_candidate_id: int | None = None
+    lexical_score: float = 0.0
+    layout_score: float = 0.0
+    lexical_evidence: dict[str, Any] = field(default_factory=dict)
+    score_breakdown: dict[str, Any] = field(default_factory=dict)
 
 
 def get_primary_processing_method(result: ClassificationResult) -> str:
@@ -113,6 +139,7 @@ class HybridClassifier:
         feature_extractor: DocumentFeatureExtractor | None = None,
         type_classifier: TypeClassifier | None = None,
         confidence_policy: ConfidencePolicy | None = None,
+        ml_enabled: bool = False,
     ) -> None:
         self.repository = repository
         self.embedder = embedder
@@ -126,6 +153,7 @@ class HybridClassifier:
         self.feature_extractor = feature_extractor or DocumentFeatureExtractor()
         self.type_classifier = type_classifier or TypeClassifier()
         self.confidence_policy = confidence_policy or ConfidencePolicy(threshold=review_threshold)
+        self.ml_enabled = ml_enabled
 
     def classify_file(
         self,
@@ -256,45 +284,56 @@ class HybridClassifier:
         )
         filename_scores = self._build_filename_scores(file_name=file_name, categories=categories)
         metadata_scores = self._build_metadata_scores(file_name=file_name, text=normalized_text, categories=categories)
+        active_profiles = self.repository.list_category_profiles(include_inactive=False)
+        category_profiles = build_category_profiles_from_rows(active_profiles, categories)
+        lexical_results = compute_lexical_scores(feature_bundle.compressed_text or normalized_text, category_profiles)
+        lexical_scores = flatten_lexical_scores(lexical_results, categories)
+        layout_scores = self._build_layout_scores(categories=categories, profiles=category_profiles, feature_bundle=feature_bundle)
         adjustment_time = time.perf_counter() - adjustment_start
         combine_start = time.perf_counter()
+        score_weights = self._build_score_weights(
+            file_name=file_name,
+            feature_bundle=feature_bundle,
+            top_rule_score=top_rule_score,
+            top_rule_match_count=top_rule_match_count,
+            feedback_scores=feedback_scores,
+        )
         candidate_scores = self._build_candidate_scores(
             categories=categories,
             rule_scores=rule_scores,
             embedding_scores=embedding_scores,
+            lexical_scores=lexical_scores,
             feedback_scores=feedback_scores,
             duplicate_scores=duplicate_scores,
             metadata_scores=metadata_scores,
             filename_scores=filename_scores,
+            layout_scores=layout_scores,
+            weights=score_weights,
         )
         combine_time = time.perf_counter() - combine_start
 
         weak_unverified_match = top_rule_score < self.low_rule_confidence_threshold and not should_use_embedding
-        if (top_rule_match_count == 0 or weak_unverified_match) and max(embedding_scores.values(), default=0.0) <= 0:
+        if (
+            (top_rule_match_count == 0 or weak_unverified_match)
+            and max(embedding_scores.values(), default=0.0) <= 0
+            and max(lexical_scores.values(), default=0.0) <= 0
+        ):
             predicted_category = UNCATEGORIZED
             candidate_scores[predicted_category] = 0.0
         else:
             predicted_category = self._pick_top_category(candidate_scores, categories)
 
         confidence = max(candidate_scores.get(predicted_category, 0.0), rule_scores.get(predicted_category, 0.0))
-        type_prediction = self.type_classifier.predict(
-            training_rows=self.repository.fetch_type_training_examples(),
-            file_name=file_name or "",
-            body_text=feature_bundle.compressed_text,
-            structural_features={
-                **feature_bundle.structural_features,
-                **feature_bundle.text_stats,
-                **{f"layout_{key}": value for key, value in feature_bundle.layout_features.items()},
+        type_prediction = TypePrediction(
+            predicted_type="",
+            confidence=0.0,
+            available=False,
+            evidence={
+                "status": "disabled",
+                "reason": "ml_disabled_by_config",
+                "replacement": "unsupervised_batch_pipeline",
             },
-            fallback_type=predicted_category,
         )
-        if type_prediction.available:
-            self.repository.insert_model_run(
-                model_name="type_classifier",
-                model_version=self.type_classifier.version,
-                training_count=int(type_prediction.evidence.get("training_count", 0)),
-                metrics=type_prediction.evidence,
-            )
         top_embedding_category = self._pick_top_category(embedding_scores, categories)
         embedding_available = max(embedding_scores.values(), default=0.0) > 0
         confidence_decision = self.confidence_policy.evaluate(
@@ -320,16 +359,27 @@ class HybridClassifier:
             review_required = True
         hierarchy = self._resolve_hierarchy(predicted_category, confidence)
         suggested_tags = self._suggest_tags(feature_bundle, predicted_type=type_prediction.predicted_type)
+        evidence_groups = build_evidence_groups(
+            predicted_type=type_prediction.predicted_type or predicted_category,
+            text=feature_bundle.compressed_text,
+            structural_features=feature_bundle.structural_features,
+            layout_features=feature_bundle.layout_features,
+            text_stats=feature_bundle.text_stats,
+        )
         explanation_start = time.perf_counter()
         explanation_obj = self._build_explanation(
             predicted_category=predicted_category,
             hierarchy=hierarchy,
             rule_breakdown=rule_breakdown,
             embedding_breakdown=embedding_breakdown,
+            lexical_results=lexical_results,
+            lexical_scores=lexical_scores,
             feedback_scores=feedback_scores,
             duplicate_scores=duplicate_scores,
             metadata_scores=metadata_scores,
             filename_scores=filename_scores,
+            layout_scores=layout_scores,
+            score_weights=score_weights,
             embedding_used=should_use_embedding,
             text=normalized_text,
         )
@@ -355,6 +405,7 @@ class HybridClassifier:
             "scope": "classifier",
             "stage_timings": stage_timings,
             "embedding_meta": embedding_meta,
+            "score_weights": score_weights,
             "strong_rule_match": strong_rule_match,
             "top_rule_match_count": top_rule_match_count,
             "confirmed_examples_count": len(confirmed_examples),
@@ -372,7 +423,7 @@ class HybridClassifier:
         return ClassificationResult(
             predicted_category=predicted_middle_category,
             confidence=confidence,
-            final_score=confidence,
+            final_score=candidate_scores.get(predicted_middle_category, confidence),
             rule_score=rule_scores.get(predicted_middle_category, 0.0),
             embedding_score=embedding_scores.get(predicted_middle_category, 0.0),
             llm_score=0.0,
@@ -394,10 +445,12 @@ class HybridClassifier:
             source_scores={
                 "rule": rule_scores,
                 "embedding": embedding_scores,
+                "lexical": lexical_scores,
                 "feedback": feedback_scores,
                 "duplicate": duplicate_scores,
                 "metadata": metadata_scores,
                 "filename": filename_scores,
+                "layout": layout_scores,
             },
             evidence_snippets=explanation_obj.evidence_snippets,
             metadata_signals=explanation_obj.metadata_signals,
@@ -415,6 +468,26 @@ class HybridClassifier:
                 "scores": rule_scores,
             },
             ml_evidence=type_prediction.evidence | {"candidate_scores": type_prediction.candidate_scores},
+            semantic_evidence=evidence_groups.get("semantic", []),
+            layout_evidence=evidence_groups.get("layout", []),
+            structure_evidence=evidence_groups.get("structure", []),
+            ocr_evidence=evidence_groups.get("ocr", []),
+            lexical_score=lexical_scores.get(predicted_middle_category, 0.0),
+            layout_score=layout_scores.get(predicted_middle_category, 0.0),
+            lexical_evidence=lexical_results.get(predicted_middle_category, {}),
+            score_breakdown={
+                "weights": score_weights,
+                "scores": {
+                    "rule": rule_scores.get(predicted_middle_category, 0.0),
+                    "embedding": embedding_scores.get(predicted_middle_category, 0.0),
+                    "lexical": lexical_scores.get(predicted_middle_category, 0.0),
+                    "feedback": feedback_scores.get(predicted_middle_category, 0.0),
+                    "layout": layout_scores.get(predicted_middle_category, 0.0),
+                    "filename": filename_scores.get(predicted_middle_category, 0.0),
+                    "metadata": metadata_scores.get(predicted_middle_category, 0.0),
+                    "duplicate": duplicate_scores.get(predicted_middle_category, 0.0),
+                },
+            },
         )
 
     def persist_classification(self, file_id: int, result: ClassificationResult) -> int:
@@ -440,6 +513,8 @@ class HybridClassifier:
                 {
                     "evidence_snippets": result.evidence_snippets,
                     "metadata_signals": result.metadata_signals,
+                    "lexical_evidence": result.lexical_evidence,
+                    "score_breakdown": result.score_breakdown,
                     "ocr_used": result.ocr_used,
                     "llm_used": result.llm_used,
                 },
@@ -455,6 +530,8 @@ class HybridClassifier:
             cluster_candidate_id=result.cluster_candidate_id,
             ml_evidence_json=json.dumps(result.ml_evidence, ensure_ascii=False),
             rule_evidence_json=json.dumps(result.rule_evidence, ensure_ascii=False),
+            lexical_score=result.lexical_score,
+            layout_score=result.layout_score,
         )
         for item in result.suggested_tags:
             tag = str(item.get("tag", "")).strip()
@@ -584,23 +661,90 @@ class HybridClassifier:
         categories: list[str],
         rule_scores: dict[str, float],
         embedding_scores: dict[str, float],
+        lexical_scores: dict[str, float],
         feedback_scores: dict[str, float],
         duplicate_scores: dict[str, float],
         metadata_scores: dict[str, float],
         filename_scores: dict[str, float],
+        layout_scores: dict[str, float],
+        weights: dict[str, float],
     ) -> dict[str, float]:
         candidate_scores: dict[str, float] = {}
         for category in categories:
             candidate_scores[category] = round(
-                (rule_scores.get(category, 0.0) * 0.45)
-                + (embedding_scores.get(category, 0.0) * 0.2)
-                + (feedback_scores.get(category, 0.0) * 0.1)
-                + (duplicate_scores.get(category, 0.0) * 0.05)
-                + (metadata_scores.get(category, 0.0) * 0.1)
-                + (filename_scores.get(category, 0.0) * 0.1),
+                (rule_scores.get(category, 0.0) * weights.get("rule", 0.0))
+                + (embedding_scores.get(category, 0.0) * weights.get("embedding", 0.0))
+                + (lexical_scores.get(category, 0.0) * weights.get("lexical", 0.0))
+                + (feedback_scores.get(category, 0.0) * weights.get("feedback", 0.0))
+                + (layout_scores.get(category, 0.0) * weights.get("layout", 0.0))
+                + (filename_scores.get(category, 0.0) * weights.get("filename", 0.0))
+                + (metadata_scores.get(category, 0.0) * weights.get("metadata", 0.0))
+                + (duplicate_scores.get(category, 0.0) * weights.get("duplicate", 0.0)),
                 4,
             )
         return candidate_scores
+
+    def _build_score_weights(
+        self,
+        *,
+        file_name: str | None,
+        feature_bundle: DocumentFeatureBundle,
+        top_rule_score: float,
+        top_rule_match_count: int,
+        feedback_scores: dict[str, float],
+        renormalize: bool = True,
+    ) -> dict[str, float]:
+        weights = dict(BASE_SCORE_WEIGHTS)
+        quality = self._text_quality_factor(feature_bundle.text_stats)
+        if quality < 1.0:
+            weights["lexical"] *= quality
+            weights["embedding"] *= max(0.35, quality)
+        if self._is_generic_filename(file_name):
+            weights["filename"] = 0.0
+        if top_rule_score >= self.rule_skip_embedding_threshold and top_rule_match_count >= self.min_rule_matches_for_skip:
+            weights["rule"] *= 1.15
+        if max(feedback_scores.values(), default=0.0) < 0.34:
+            weights["feedback"] *= 0.6
+        weights["duplicate"] = min(weights.get("duplicate", 0.0), 0.01)
+        if renormalize:
+            total = sum(weights.values())
+            if total > 0:
+                weights = {key: round(value / total, 4) for key, value in weights.items()}
+        return weights
+
+    def _text_quality_factor(self, text_stats: dict[str, Any]) -> float:
+        char_count = float(text_stats.get("char_count", text_stats.get("ocr_text_length", 0)) or 0)
+        low_quality_scan_score = float(text_stats.get("low_quality_scan_score", 0.0) or 0.0)
+        unreadable_ratio = float(text_stats.get("unreadable_ratio", 0.0) or 0.0)
+        length_factor = min(1.0, max(0.2, char_count / 600.0))
+        noise_factor = max(0.2, 1.0 - max(low_quality_scan_score, unreadable_ratio * 2.0))
+        return round(max(0.15, min(1.0, length_factor * noise_factor)), 4)
+
+    def _build_layout_scores(
+        self,
+        *,
+        categories: list[str],
+        profiles: dict[str, dict[str, Any]],
+        feature_bundle: DocumentFeatureBundle,
+    ) -> dict[str, float]:
+        combined_features = {
+            **feature_bundle.layout_features,
+            **feature_bundle.structural_features,
+            **feature_bundle.text_stats,
+        }
+        scores = {category: 0.0 for category in categories}
+        for category in categories:
+            profile = profiles.get(category, {})
+            signals = profile.get("profile_signals") if isinstance(profile, dict) else {}
+            core_features = signals.get("core_features", []) if isinstance(signals, dict) else []
+            values = [
+                float(combined_features.get(feature, 0.0) or 0.0)
+                for feature in core_features
+                if feature in combined_features and isinstance(combined_features.get(feature), (int, float))
+            ]
+            if values:
+                scores[category] = round(min(1.0, sum(values) / len(values)), 4)
+        return scores
 
     def _normalize_scores(self, raw_scores: dict[str, float], categories: list[str]) -> dict[str, float]:
         strong_rule_score = 4.0
@@ -615,13 +759,23 @@ class HybridClassifier:
 
     def _build_filename_scores(self, file_name: str | None, categories: list[str]) -> dict[str, float]:
         scores = {category: 0.0 for category in categories}
-        if not file_name or self.taxonomy is None:
+        if not file_name or self.taxonomy is None or self._is_generic_filename(file_name):
             return scores
         lowered = file_name.lower()
         for entry in self.taxonomy.entries:
             if entry.middle_category in scores and any(alias.lower() in lowered for alias in entry.aliases + [entry.flat_label]):
                 scores[entry.middle_category] = 0.8
         return scores
+
+    def _is_generic_filename(self, file_name: str | None) -> bool:
+        if not file_name:
+            return True
+        stem = file_name.rsplit(".", 1)[0].lower().strip()
+        return bool(
+            re.fullmatch(r"(scan|image|img|document|doc|file|page)[_\-\s]?\d*", stem)
+            or re.fullmatch(r"kakaotalk[_\-\s].*", stem)
+            or stem in {"untitled", "new document", "새 문서"}
+        )
 
     def _build_metadata_scores(self, file_name: str | None, text: str, categories: list[str]) -> dict[str, float]:
         scores = {category: 0.0 for category in categories}
@@ -674,19 +828,25 @@ class HybridClassifier:
         hierarchy: HierarchyPrediction,
         rule_breakdown: dict[str, Any],
         embedding_breakdown: dict[str, Any],
+        lexical_results: dict[str, dict[str, Any]],
+        lexical_scores: dict[str, float],
         feedback_scores: dict[str, float],
         duplicate_scores: dict[str, float],
         metadata_scores: dict[str, float],
         filename_scores: dict[str, float],
+        layout_scores: dict[str, float],
+        score_weights: dict[str, float],
         embedding_used: bool,
         text: str,
     ) -> ClassificationExplanation:
         matched = rule_breakdown["matches"].get(predicted_category, [])
         top_example = embedding_breakdown["top_examples"].get(predicted_category)
+        lexical_result = lexical_results.get(predicted_category, {})
         summary_parts = [
             f"recommend={hierarchy.large_category}/{hierarchy.middle_category}",
             f"rules={', '.join(matched[:5]) if matched else 'none'}",
             f"embedding={'used' if embedding_used else 'skipped'}",
+            f"lexical={lexical_scores.get(predicted_category, 0.0):.3f}",
         ]
         if hierarchy.small_category:
             summary_parts[0] += f"/{hierarchy.small_category}"
@@ -705,8 +865,13 @@ class HybridClassifier:
             matched_rules=matched[:10],
             source_scores={
                 "embedding": embedding_breakdown["scores"].get(predicted_category, 0.0),
+                "lexical": lexical_scores.get(predicted_category, 0.0),
+                "tfidf": float(lexical_result.get("tfidf_score", 0.0) or 0.0),
+                "ngram": float(lexical_result.get("ngram_score", 0.0) or 0.0),
+                "bow": float(lexical_result.get("bow_score", 0.0) or 0.0),
                 "feedback": feedback_value,
                 "duplicate": duplicate_value,
+                "layout": layout_scores.get(predicted_category, 0.0),
                 "metadata": metadata_scores.get(predicted_category, 0.0),
                 "filename": filename_scores.get(predicted_category, 0.0),
             },
@@ -714,14 +879,18 @@ class HybridClassifier:
             metadata_signals={
                 "large_category": hierarchy.large_category,
                 "middle_category": hierarchy.middle_category,
+                "top_lexical_terms": ", ".join(str(item) for item in lexical_result.get("top_terms", [])[:8]),
+                "top_ngram_matches": ", ".join(str(item) for item in lexical_result.get("top_ngram_matches", [])[:8]),
             },
             classifier_contributions={
-                "rules": 0.45,
-                "embedding": 0.2,
-                "metadata": 0.1,
-                "filename": 0.1,
-                "feedback": 0.1,
-                "duplicate": 0.05,
+                "rules": score_weights.get("rule", 0.0),
+                "embedding": score_weights.get("embedding", 0.0),
+                "lexical": score_weights.get("lexical", 0.0),
+                "feedback": score_weights.get("feedback", 0.0),
+                "layout": score_weights.get("layout", 0.0),
+                "filename": score_weights.get("filename", 0.0),
+                "metadata": score_weights.get("metadata", 0.0),
+                "duplicate": score_weights.get("duplicate", 0.0),
             },
         )
         return explanation

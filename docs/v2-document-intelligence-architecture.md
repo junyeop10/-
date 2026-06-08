@@ -115,9 +115,9 @@ Use clustering for:
 
 CPU-friendly starting points:
 
-- `MiniBatchKMeans`
-- `AgglomerativeClustering`
-- distance-threshold grouping over cached embeddings
+- Generate or reuse document embeddings first.
+- Run `HDBSCAN` on those embedding vectors for new-group discovery.
+- Keep DBSCAN or token-bucket fallback only for environments where optional clustering dependencies are unavailable.
 
 ### LLM Assistance
 
@@ -205,7 +205,7 @@ Single forced category assignment should not be the only output.
 - Use sampled text instead of whole-document embeddings.
 - Batch embedding generation when possible.
 - Prefer sparse TF-IDF models for the main classifier.
-- Use clustering on subsets rather than the full corpus every time.
+- Use HDBSCAN clustering on embedded subsets rather than the full corpus every time.
 
 ## Main Risks
 
@@ -223,7 +223,7 @@ Single forced category assignment should not be the only output.
 3. Add a CPU-friendly type classifier trained from user-confirmed examples.
 4. Upgrade review routing with confidence, margin, and source-conflict checks.
 5. Add tag storage separate from type/category.
-6. Run clustering first on miscellaneous and review-required documents.
+6. Generate embeddings for miscellaneous and review-required documents, then run HDBSCAN clustering on those vectors.
 7. Add category candidate review and accept/reject flow.
 8. Feed accepted corrections into retraining and rule suggestion.
 

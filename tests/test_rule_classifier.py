@@ -77,6 +77,35 @@ class RuleClassifierTest(unittest.TestCase):
             file_name="사업자등록증_(주)에네이.pdf",
         )
         self.assertEqual(result.predicted_category, "사업자등록증")
+        self.assertEqual(result.ml_evidence.get("status"), "disabled")
+        self.assertEqual(result.predicted_type, "")
+        self.assertEqual(result.type_confidence, 0.0)
+
+    def test_ml_disabled_does_not_call_type_classifier(self) -> None:
+        class FailingTypeClassifier:
+            version = "test"
+
+            def predict(self, **_: object) -> object:
+                raise AssertionError("TypeClassifier should not be called when ML is disabled")
+
+        classifier = HybridClassifier(
+            repository=self.repository,
+            embedder=None,  # type: ignore[arg-type]
+            rule_classifier=RuleBasedClassifier(self.repository),
+            use_embedding_for_no_rule=False,
+            type_classifier=FailingTypeClassifier(),  # type: ignore[arg-type]
+            ml_enabled=False,
+        )
+
+        result = classifier.classify_file(
+            file_id=1,
+            file_hash="hash-ml-off",
+            text="계약서 갑 을 계약기간",
+            duplicate_of_file_id=None,
+            file_name="계약서.pdf",
+        )
+
+        self.assertEqual(result.ml_evidence.get("reason"), "ml_disabled_by_config")
 
     def test_filename_hint_can_classify_registry_without_text(self) -> None:
         rules = [

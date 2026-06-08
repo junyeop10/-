@@ -20,10 +20,11 @@ The current pipeline is:
 3. compute `xxhash64` for duplicate detection
 4. run rule-based scoring first
 5. add embedding similarity when needed
-6. add OCR only when text extraction is insufficient
-7. optionally call a local LLM only for ambiguous cases
-8. persist explanation, evidence, and performance data
-9. let the user review, confirm, correct, or move files safely
+6. for unknown/review pools, build embeddings first and run HDBSCAN clustering second
+7. add OCR only when text extraction is insufficient
+8. optionally call a local LLM only for ambiguous cases
+9. persist explanation, evidence, and performance data
+10. let the user review, confirm, correct, or move files safely
 
 ## 3. Operator experience in the GUI
 
