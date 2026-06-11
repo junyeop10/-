@@ -10,7 +10,7 @@ code_review:
 ignore_patterns:
   - "**/__pycache__/**"
   - "**/*.pyc"
-  - "server/uploads/**"
-  - "server/cache.db"
+  - "backend/uploads/**"
+  - "backend/cache.db"
   - "**/.env"
   - "data/**/*.db"

@@ -1,0 +1,42 @@
+{
+  "공고_지침_양식": {
+    "description": "공고문, 사업 지침, 신청·접수 양식, 모집 안내",
+    "sample_keywords": ["공고", "지침", "양식", "모집", "접수", "신청", "안내"],
+    "sample_filenames": ["공고문.pdf", "사업안내.hwp", "신청양식.docx"]
+  },
+  "사업계획서 수행계획서": {
+    "description": "사업계획서, 수행계획서, 제안서, 직무수행계획서, 컨설팅 계획",
+    "sample_keywords": ["사업계획", "수행계획", "제안서", "직무수행", "컨설팅", "추진계획"],
+    "sample_filenames": ["사업계획서.pdf", "직무수행계획서.docx", "수행계획서.hwp"]
+  },
+  "조사_참고자료": {
+    "description": "시장·기술 조사, 참고 문헌, 사전 검토 자료, 배경 조사",
+    "sample_keywords": ["조사", "참고", "리서치", "분석자료", "사례", "벤치마크"],
+    "sample_filenames": ["시장조사.pdf", "참고자료.docx", "기술동향.hwp"]
+  },
+  "중간_최종 결과물 및 보고서": {
+    "description": "중간·최종 보고서, 결과물, 성과 보고, 완료 보고서",
+    "sample_keywords": ["보고서", "결과보고", "최종보고", "중간보고", "결과물", "성과"],
+    "sample_filenames": ["최종보고서.pdf", "결과보고서.docx", "중간보고.hwp"]
+  },
+  "발표자료": {
+    "description": "발표 슬라이드, PT, 데모·시연 발표 자료",
+    "sample_keywords": ["발표", "슬라이드", "ppt", "pt", "프레젠테이션", "시연"],
+    "sample_filenames": ["발표자료.pptx", "중간발표.ppt", "시연자료.pptx"]
+  },
+  "견적_계약_정산": {
+    "description": "견적서, 계약서, 협약서, 정산·지급·세금계산서 관련",
+    "sample_keywords": ["견적", "계약", "협약", "정산", "지급", "세금계산서", "대금"],
+    "sample_filenames": ["견적서.pdf", "계약서.docx", "정산내역.xlsx"]
+  },
+  "기업 인증서": {
+    "description": "기업·제품 인증서, 등록증, 면허, 특허, ISO 등 자격 증빙",
+    "sample_keywords": ["인증서", "등록증", "면허", "특허", "iso", "자격", "증명"],
+    "sample_filenames": ["사업자등록증.pdf", "ISO인증서.pdf", "특허증.jpg"]
+  },
+  "기타": {
+    "description": "위 7개 카테고리에 명확히 속하지 않는 일반 문서. 새 유형 후보는 suggested_category로 제안",
+    "sample_keywords": [],
+    "sample_filenames": []
+  }
+}

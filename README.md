@@ -48,23 +48,20 @@ The current implementation includes:
 ## Project Layout
 
 ```text
+backend/          # FastAPI 파일 분류 API (팀 백엔드)
+  main.py
+  pipeline/
+  docs/
+src/              # CLI·GUI 문서 분류 (레거시/별도 실행)
 app.py
 app_gui.py
 data/
-  app_config.json
-  categories.json
-src/
-  cli.py
-  classifier.py
-  config.py
-  taxonomy.py
-  storage.py
-  operations.py
-  recovery.py
-  adaptive.py
+rules/            # Git 워크플로 (팀 공통)
+docs/             # 아키텍처·운영 문서
 tests/
-docs/
 ```
+
+팀 백엔드 실행·컨벤션: [`backend/README.md`](backend/README.md), [`backend/docs/CONVENTIONS.md`](backend/docs/CONVENTIONS.md)
 
 ## Install
 

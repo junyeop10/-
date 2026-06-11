@@ -1,0 +1,12 @@
+# Claude LLM CLI 테스트 전용 (서버·클러스터링 패키지 제외)
+anthropic
+python-dotenv
+xxhash
+pymupdf
+python-docx
+openpyxl
+python-pptx
+sentence-transformers
+# scipy 1.14+ needs NumPy 2.x; pin both on Windows to avoid DLL errors
+numpy>=1.26.0,<2.0.0
+scipy>=1.11.0,<1.14.0
