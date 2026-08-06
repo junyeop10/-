@@ -1,5 +1,7 @@
 # Enterprise Document Classification MVP
 
+> **My contribution to this team project:** Claude API pipeline integration (Stage 5) — see [docs/my-contribution-claude-api.md](docs/my-contribution-claude-api.md).
+
 Safety-first document classification and organization pipeline for office files and scanned PDFs.
 
 This project started as a flat-label classifier and is now moving into version 2 as a CPU-first document intelligence system. The target direction is feature extraction, ML type classification, clustering, active learning, and user-feedback-driven improvement without requiring an AI model to read every full document on every run.
@@ -16,6 +18,7 @@ The current implementation includes:
 
 ## Documentation
 
+- [My Contribution — Claude API Pipeline Integration](docs/my-contribution-claude-api.md)
 - [Presentation Summary](docs/presentation-summary.md)
 - [Version History](docs/version-history.md)
 - [Embedding Storage Design](docs/embedding-storage.md)
